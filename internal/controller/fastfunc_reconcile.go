@@ -294,9 +294,9 @@ func (r *FaSTFuncReconciler) configs2FaSTPods(fastfunc *fastfuncv1.FaSTFunc, con
 		selector := metav1.LabelSelector{}
 
 		fastfunc.Spec.PodSpec.DeepCopyInto(&podSpec)
-		if fastfunc.Spec.Selector != nil {
-			fastfunc.Spec.Selector.DeepCopyInto(&selector)
-		}
+		// if fastfunc.Spec.Selector != nil {
+		// 	fastfunc.Spec.Selector.DeepCopyInto(&selector)
+		// }
 
 		extendedAnnotations := make(map[string]string)
 		extendedLabels := make(map[string]string)

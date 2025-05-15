@@ -134,7 +134,7 @@ func (r *FaSTFuncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	stopCh := make(chan struct{})
 	r.nodeManager = NewNodeManager(5)
-	go r.nodeManager.StartTCPAcceptor("0.0.0.0:50051", stopCh)
+	go r.nodeManager.StartTCPAcceptor("0.0.0.0:10089", stopCh)
 
 	ctrl.Log.Info("Starting the FaSTFunc controller")
 	r.fastpodLister = getFaSTPodLister(client, "fast-gshare-fn", stopCh)

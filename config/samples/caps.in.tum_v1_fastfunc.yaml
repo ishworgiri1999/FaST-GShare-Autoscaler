@@ -9,10 +9,10 @@ metadata:
     app.kubernetes.io/created-by: scheduler
   name: fastfunc-resnet
   namespace: fast-gshare-fn
+
 spec:
   modelName: resnet
-  labels:
-    fast_function: fastfunc-resnet
+  minQps: 100
   podSpec:
     containers:
     - name: resnet-pytorch

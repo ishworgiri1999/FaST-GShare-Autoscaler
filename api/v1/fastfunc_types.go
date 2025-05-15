@@ -44,7 +44,7 @@ type FaSTFuncSpec struct {
 	// Label keys and values that must match in order to be controlled by this replica set.
 	// It must match the pod template's labels.
 	// More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#label-selectors
-	Selector *metav1.LabelSelector `json:"selector" protobuf:"bytes,2,opt,name=selector"`
+	// Selector *metav1.LabelSelector `json:"selector" protobuf:"bytes,2,opt,name=selector"`
 }
 
 // FaSTFuncStatus defines the observed state of FaSTFunc
