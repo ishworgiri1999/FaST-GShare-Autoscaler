@@ -28,3 +28,31 @@ func retrieveResource2RPSCapability(funcname string, quota float64, smPartition 
 func getMostEfficientConfig() (FaSTPodConfig, float64) {
 	return FaSTPodConfig{30, 12, 1073741824, 1}, 50.0
 }
+
+type ProfileKey struct {
+	ModelName    string
+	GPUType      string
+	SMPercentage int // use int for efficient hashing
+	Quota        float64
+}
+
+type QPSStore struct {
+	data map[ProfileKey]float64 // or int if QPS is always an integer
+}
+
+func NewQPSStore() *QPSStore {
+	return &QPSStore{
+		data: make(map[ProfileKey]float64),
+	}
+}
+
+func (s *QPSStore) Set(modelName, gpuType string, smPercentage int, quota float64, qps float64) {
+	key := ProfileKey{modelName, gpuType, smPercentage, quota}
+	s.data[key] = qps
+}
+
+func (s *QPSStore) Get(modelName, gpuType string, smPercentage int, quota float64) (float64, bool) {
+	key := ProfileKey{modelName, gpuType, smPercentage, quota}
+	qps, exists := s.data[key]
+	return qps, exists
+}

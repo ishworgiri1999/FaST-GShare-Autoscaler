@@ -39,6 +39,15 @@ spec:
           spec:
             description: FaSTFuncSpec defines the desired state of FaSTFunc
             properties:
+              minQps:
+                description: MinQps is the minimum number of requests per second that
+                  the function should handle.
+                type: integer
+              modelName:
+                description: ModelName is the name of the model that the function
+                  should handle.
+                minLength: 1
+                type: string
               podSpec:
                 description: PodSpec is a description of a pod.
                 properties:

@@ -32,6 +32,14 @@ type FaSTFuncSpec struct {
 	// +optional
 	PodSpec corev1.PodSpec `json:"podSpec,omitempty"`
 
+	// MinQps is the minimum number of requests per second that the function should handle.
+	// +optional
+	MinQps int `json:"minQps,omitempty"`
+
+	// ModelName is the name of the model that the function should handle.
+	// +kubebuilder:validation:MinLength=1
+	ModelName string `json:"modelName,omitempty"`
+
 	// Selector is a label query over pods that should match the replica count.
 	// Label keys and values that must match in order to be controlled by this replica set.
 	// It must match the pod template's labels.
