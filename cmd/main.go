@@ -58,6 +58,7 @@ func main() {
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
+	var initConfig controller.InitConfig
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -69,6 +70,9 @@ func main() {
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+
+	flag.StringVar(&initConfig.NodeListenerAddress, "node-listener-address", "0.0.0.0:10089", "The address the node listener binds to.")
+	flag.StringVar(&initConfig.PrometheusURL, "prometheus-url", "http://prometheus.fast-gshare.svc.cluster.local:9090", "The URL of the prometheus server for fast-func.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -147,7 +151,7 @@ func main() {
 	if err = (&controller.FaSTFuncReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
+	}).SetupWithManager(mgr, initConfig); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "FaSTFunc")
 		os.Exit(1)
 	}

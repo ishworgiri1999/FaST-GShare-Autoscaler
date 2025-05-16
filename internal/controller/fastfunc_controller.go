@@ -41,6 +41,11 @@ import (
 	corelisters "k8s.io/client-go/listers/core/v1"
 )
 
+type InitConfig struct {
+	PrometheusURL       string
+	NodeListenerAddress string
+}
+
 // FaSTFuncReconciler reconciles a FaSTFunc object
 type FaSTFuncReconciler struct {
 	client.Client
@@ -52,10 +57,14 @@ type FaSTFuncReconciler struct {
 }
 
 type FaSTPodConfig struct {
-	Quota       int64 // percentage
-	SMPartition int64 // percentage
+	Quota       int // 1-100 (fraction of seconds. total is 100)
+	SMPartition int // percentage (0-100)
 	Mem         int64
 	Replicas    int64
+	GPUType     string
+	GPUUUID     string
+	NodeName    string
+	IsMig       bool
 }
 
 var once sync.Once
@@ -116,11 +125,11 @@ func getNodeLister(client kubernetes.Interface, stopCh chan struct{}) corelister
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *FaSTFuncReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *FaSTFuncReconciler) SetupWithManager(mgr ctrl.Manager, initConfig InitConfig) error {
 
 	// Create a Prometheus API client
 	promClient, err := api.NewClient(api.Config{
-		Address: "http://prometheus.fast-gshare.svc.cluster.local:9090",
+		Address: initConfig.PrometheusURL,
 	})
 	if err != nil {
 		ctrl.Log.Error(err, "Failed to create the Prometheus client.")
@@ -134,7 +143,7 @@ func (r *FaSTFuncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	stopCh := make(chan struct{})
 	r.nodeManager = NewNodeManager(5)
-	go r.nodeManager.StartTCPAcceptor("0.0.0.0:10089", stopCh)
+	go r.nodeManager.StartTCPAcceptor(initConfig.NodeListenerAddress, stopCh)
 
 	ctrl.Log.Info("Starting the FaSTFunc controller")
 	r.fastpodLister = getFaSTPodLister(client, "fast-gshare-fn", stopCh)

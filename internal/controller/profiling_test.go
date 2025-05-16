@@ -1,11 +1,23 @@
 package controller
 
 import (
+	"fmt"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
+func TestSampleSprintFunction(t *testing.T) {
+
+	striner := "Hello, World!"
+	fmt.Println(striner)
+
+	assert.Equal(t, striner, "Hello, World!")
+}
+
 func TestQPSStore_SetAndGet(t *testing.T) {
-	store := NewQPSStore()
+	// data := profileData
+	store := NewQPSStore(map[ProfileKey]float64{})
 	modelName := "resnet50"
 	gpuType := "A100"
 	smPercentage := 80
@@ -34,5 +46,24 @@ func TestQPSStore_SetAndGet(t *testing.T) {
 	got, exists = store.Get(modelName, gpuType, smPercentage, quota)
 	if !exists || got != newQPS {
 		t.Errorf("Expected overwritten QPS %v, got %v", newQPS, got)
+	}
+}
+
+func TestQPSStore_PredictQPS(t *testing.T) {
+	data := profileData
+	store := NewQPSStore(data)
+	modelName := "resnet50"
+	gpuType := "A100"
+	smPercentage := 80
+	quota := 0.5
+
+	predictedQPS := store.PredictQPS(modelName, gpuType, smPercentage, quota)
+	if predictedQPS != 123.45 {
+		t.Errorf("Expected predicted QPS %v, got %v", 123.45, predictedQPS)
+	}
+
+	predictedQPS = store.PredictQPS("othermodel", gpuType, smPercentage, quota)
+	if predictedQPS != 0 {
+		t.Errorf("Expected predicted QPS %v, got %v", 0, predictedQPS)
 	}
 }

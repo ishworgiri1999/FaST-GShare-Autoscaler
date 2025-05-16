@@ -79,7 +79,7 @@ func (r *FaSTFuncReconciler) persistentReconcile() {
 				configslist = append(configslist, &config)
 				config2, _ := getMostEfficientConfig()
 				configslist = append(configslist, &config2)
-				config2.Quota = int64(40)
+				config2.Quota = 40
 				fastpods, _ := r.configs2FaSTPods(&fstfunc, configslist)
 				// err := r.reconcileDesiredFaSTFunc(fastpods)
 				if len(fastpods) > 0 {
@@ -223,7 +223,7 @@ func (r *FaSTFuncReconciler) getDesiredFastfuncSpec(fastfunc *fastfuncv1.FaSTFun
 			deltaReqs = deltaReqs * (-1)
 			for key, replica := range nominalRPSmap {
 				quota, smPartition := parseFromKeyName(key)
-				rpsUnit := retrieveResource2RPSCapability(fastfunc.ObjectMeta.Name, float64(quota)/100.0, int64(smPartition))
+				rpsUnit := retrieveResource2RPSCapability(fastfunc.ObjectMeta.Name, float64(quota)/100.0, smPartition)
 				n := int64(deltaReqs / rpsUnit)
 				if replica > n {
 					replica = replica - n
@@ -246,16 +246,16 @@ func (r *FaSTFuncReconciler) getFuncCurrentNominalRPS(funcname string) (map[stri
 	selector := labels.SelectorFromSet(labels.Set{"faas_function": funcname})
 	fastpodList, _ := r.fastpodLister.List(selector)
 	quota := 0.0
-	smPartition := int64(100)
+	smPartition := int(100)
 	klog.Infof("Number of the FaSTPods of the function %s: %d", funcname, len(fastpodList))
 	totalRPSCap := 0.0
 	nominalRPSmap := make(map[string]int64)
 	for _, fastpod := range fastpodList {
 		quota, _ = strconv.ParseFloat(fastpod.ObjectMeta.Annotations[fastpodv1.FaSTGShareGPUQuotaRequest], 64)
-		smPartition, _ = strconv.ParseInt(fastpod.ObjectMeta.Annotations[fastpodv1.FaSTGShareGPUSMPartition], 10, 64)
+		smPartition, _ = strconv.Atoi(fastpod.ObjectMeta.Annotations[fastpodv1.FaSTGShareGPUSMPartition])
 		replicas := int64(*fastpod.Spec.Replicas)
 		klog.Infof("Got Function: %s, Quota: %f, SMPartition: %d, Replicas: %d.", funcname, quota, smPartition, replicas)
-		nominalRPSmap[getResKeyName(int64(quota*100), smPartition)] = replicas
+		nominalRPSmap[getResKeyName(int(quota), smPartition)] = replicas
 		totalRPSCap += retrieveResource2RPSCapability(funcname, quota, smPartition) * float64(replicas)
 	}
 	klog.Infof("Total current processing capability of function %s is %f.", funcname, totalRPSCap)

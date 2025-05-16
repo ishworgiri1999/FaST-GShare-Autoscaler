@@ -10,6 +10,7 @@ import (
 	"time"
 
 	grpcclient "github.com/KontonGu/FaST-GShare/pkg/grpc"
+	"github.com/KontonGu/FaST-GShare/pkg/proto/seti/v1"
 	types "github.com/KontonGu/FaST-GShare/pkg/types"
 	"k8s.io/klog/v2"
 )
@@ -29,6 +30,11 @@ type Node struct {
 	Status        NodeStatus
 	GrpcClient    *grpcclient.GrpcClient
 	LastHeartbeat time.Time
+
+	availableGPUs []seti.VirtualGPU
+
+	uuid2gpu map[string]GPUDevInfo
+	gpu2uuid map[string]string
 }
 
 // NodeManager manages node liveness for the autoscaler.

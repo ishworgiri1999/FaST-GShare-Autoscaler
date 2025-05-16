@@ -22,8 +22,8 @@ import (
 	"strconv"
 )
 
-func getResKeyName(quota int64, smPartition int64) string {
-	return "-q" + strconv.Itoa(int(quota)) + "-p" + strconv.Itoa(int(smPartition))
+func getResKeyName(quota int, smPartition int) string {
+	return "-q" + strconv.Itoa(quota) + "-p" + strconv.Itoa(smPartition)
 }
 
 func parseFromKeyName(key string) (int, int) {
