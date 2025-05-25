@@ -1,14 +1,13 @@
 package controller
 
 import (
-	"container/list"
 	"fastgshare/fastfunc/internal/shelf"
 	"fmt"
 
 	"github.com/KontonGu/FaST-GShare/pkg/types"
 )
 
-type GPUDevInfo struct {
+type GPUInfo struct {
 	virtual                 bool    //can this be deleted
 	profileID               *uint32 //profile id for virtual gpu
 	smCount                 int     // number of SMs not to be confused with SMPartition
@@ -24,9 +23,9 @@ type GPUDevInfo struct {
 	SMAllocationGranularity int //sm cant be assigned arbitrary, it has to be a multiple of this
 
 	// Usage of GPU Memory
-	UsageMem     int64
-	podList      *list.List //Fastpod or MPSPod
-	ExclusivePod string
+	UsageMem int64
+	// podList      *list.List //Fastpod or MPSPod
+	//	ExclusivePod string
 
 	costPerSecond int
 
@@ -34,11 +33,11 @@ type GPUDevInfo struct {
 	podConfigToShelfItemsId map[string][]int
 }
 
-func (g *GPUDevInfo) AvailableMemory() int64 {
+func (g *GPUInfo) AvailableMemory() int64 {
 	return g.Mem - g.UsageMem
 }
 
-func (g *GPUDevInfo) AllocateAndCommitConfig(config *Config) (*Config, error) {
+func (g *GPUInfo) AllocateAndCommitConfig(config *Config) (*Config, error) {
 	// Remove memory from usage
 	g.UsageMem -= (config.MemoryReq * int64(config.RequiredReplica))
 
@@ -55,16 +54,16 @@ func (g *GPUDevInfo) AllocateAndCommitConfig(config *Config) (*Config, error) {
 	}
 
 	config.AllocatedReplica = successfulReplicas
-	config.AllocatedQPS = config.QpsPerReplica * float64(config.AllocatedReplica)
+	config.AllocatedRPS = config.QpsPerReplica * float64(config.AllocatedReplica)
 
 	if successfulReplicas < config.RequiredReplica {
-		return nil, fmt.Errorf("failed to insert replica: required %d, successful %d", config.RequiredReplica, successfulReplicas)
+		return config, fmt.Errorf("failed to insert replica: required %d, successful %d", config.RequiredReplica, successfulReplicas)
 	}
 
 	return config, nil
 }
 
-func (g *GPUDevInfo) DeallocateConfig(config *Config) error {
+func (g *GPUInfo) DeallocateConfig(config *Config) bool {
 
 	//for each replica, remove from shelf
 	for id := range config.shelfItems {
@@ -74,13 +73,40 @@ func (g *GPUDevInfo) DeallocateConfig(config *Config) error {
 	//remove memory from usage
 	g.UsageMem += (config.MemoryReq * int64(config.AllocatedReplica))
 
-	return nil
+	return g.Usage.IsEmpty()
 }
 
-func NewGPUDevInfo(gpuType string, virtual bool, profileID *uint32, uuid string, mem int64, totalSMPercentage int, smAllocationGranularity int) *GPUDevInfo {
+func (g *GPUInfo) ReduceConfig(config *Config, newReplicaCount int) bool {
+
+	replicaReduceCount := config.AllocatedReplica - newReplicaCount
+
+	if replicaReduceCount == 0 {
+		return g.Usage.IsEmpty()
+	}
+
+	//remove memory from usage
+	g.UsageMem -= (config.MemoryReq * int64(replicaReduceCount))
+	//remove shelf items
+
+	removalCount := 0
+	for shelfItemId := range config.shelfItems {
+		//remove shelf item one by one until replicaReduceCount is reached
+		if removalCount < replicaReduceCount {
+			g.Usage.Remove(shelfItemId)
+			delete(config.shelfItems, shelfItemId)
+			removalCount++
+		} else {
+			break
+		}
+	}
+
+	return g.Usage.IsEmpty()
+}
+
+func NewGPUDevInfo(gpuType string, virtual bool, profileID *uint32, uuid string, mem int64, totalSMPercentage int, smAllocationGranularity int) *GPUInfo {
 
 	cost := GetCost(gpuType)
-	gpuDevInfo := &GPUDevInfo{
+	gpuDevInfo := &GPUInfo{
 		virtual:                 virtual,
 		profileID:               profileID,
 		GPUType:                 gpuType,
@@ -90,7 +116,7 @@ func NewGPUDevInfo(gpuType string, virtual bool, profileID *uint32, uuid string,
 		TotalSMPercentage:       totalSMPercentage,
 		SMAllocationGranularity: smAllocationGranularity,
 		Usage:                   shelf.NewShelf(totalSMPercentage),
-		podList:                 list.New(),
+		// podList:                 list.New(),
 		podConfigToShelfItemsId: make(map[string][]int),
 		costPerSecond:           cost,
 	}
@@ -98,15 +124,15 @@ func NewGPUDevInfo(gpuType string, virtual bool, profileID *uint32, uuid string,
 	return gpuDevInfo
 }
 
-func (g *GPUDevInfo) FitsMemory(memory int64) bool {
+func (g *GPUInfo) FitsMemory(memory int64) bool {
 	return memory <= g.Mem
 }
 
-func (g *GPUDevInfo) FitsSM(smPercentage int) bool {
+func (g *GPUInfo) FitsSM(smPercentage int) bool {
 	return smPercentage <= g.TotalSMPercentage
 }
 
-func (g *GPUDevInfo) Fits(smPercentage int, quota float64, memory int64) (bool, error) {
+func (g *GPUInfo) Fits(smPercentage int, quota float64, memory int64) (bool, error) {
 
 	if smPercentage > 100 {
 		return false, fmt.Errorf("smPercentage > 100")

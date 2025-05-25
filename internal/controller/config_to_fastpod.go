@@ -13,11 +13,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
+func getFastPodName(fastFuncName string, configUUID string) string {
+	return fastFuncName + "-" + configUUID
+}
+
 // Based on Resource Configuration and create corresponding fastpods' specification for FaSTFunc `fastfunc`
 func (r *FaSTFuncReconciler) ConvertConfigs2FaSTPods(fastfunc *fastfuncv1.FaSTFunc, configs []*Config) ([]*fastpodv1.FaSTPod, error) {
 	fastpodlist := make([]*fastpodv1.FaSTPod, 0)
 	for _, config := range configs {
-		klog.Infof("Trying to create the FaSTPod %s with replica = %d.", getResKeyName(config.QuotaReq, config.SMPartition), config.AllocatedReplica)
 		podSpec := corev1.PodSpec{}
 		selector := metav1.LabelSelector{}
 
@@ -42,11 +45,11 @@ func (r *FaSTFuncReconciler) ConvertConfigs2FaSTPods(fastfunc *fastfuncv1.FaSTFu
 		extendedAnnotations[fastpodv1.FaSTGShareGPUMemory] = mem
 		extendedAnnotations[fastpodv1.FastGshareAllocationType] = string(config.AllocationType)
 		extendedAnnotations["config_UUID"] = config.UUID
-		extendedAnnotations["rps"] = fmt.Sprintf("%0.2f", config.AllocatedQPS)
+		extendedAnnotations["rps"] = fmt.Sprintf("%0.2f", config.AllocatedRPS)
 		fixedReplica_int32 := int32(config.AllocatedReplica)
 		fastpod := &fastpodv1.FaSTPod{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:        fastfunc.ObjectMeta.Name + config.UUID,
+				Name:        getFastPodName(fastfunc.ObjectMeta.Name, config.UUID),
 				Namespace:   "fast-gshare-fn",
 				Labels:      extendedLabels,
 				Annotations: extendedAnnotations,

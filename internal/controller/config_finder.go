@@ -30,14 +30,14 @@ type Config struct {
 
 	NodeName         string
 	VGPUUUID         string
-	associatedGpu    *GPUDevInfo
+	associatedGpu    *GPUInfo
 	RequiredReplica  int
-	SatisfiableQPS   float64
+	SatisfiableRPS   float64
 	QpsPerReplica    float64
 	Cost             float64
-	remainingQPS     float64 //negative if exceeds
+	remainingRPS     float64 //negative if exceeds
 	AllocatedReplica int
-	AllocatedQPS     float64
+	AllocatedRPS     float64
 	shelfItems       map[int]bool
 }
 
@@ -59,7 +59,7 @@ func (ctr *NodeManager) GetConfigs(req *ResourceRequest, initial bool) ([]*Confi
 	remainingRequiredQPS := req.QPS
 	configs := []*Config{}
 
-	gpuInfos := []*GPUDevInfo{}
+	gpuInfos := []*GPUInfo{}
 
 	for _, node := range ctr.nodes {
 
@@ -89,7 +89,7 @@ func (ctr *NodeManager) GetConfigs(req *ResourceRequest, initial bool) ([]*Confi
 				if config != nil {
 					configs = append(configs, config)
 				}
-				remainingRequiredQPS -= config.SatisfiableQPS
+				remainingRequiredQPS -= config.SatisfiableRPS
 				//if remainingRequiredQPS is negative, it means we have enough qps support so we can break
 				if remainingRequiredQPS <= 0 {
 					break
@@ -105,7 +105,7 @@ func (ctr *NodeManager) GetConfigs(req *ResourceRequest, initial bool) ([]*Confi
 		//config from this gpu.
 
 		if bestConfig != nil {
-			remainingRequiredQPS -= bestConfig.SatisfiableQPS
+			remainingRequiredQPS -= bestConfig.SatisfiableRPS
 			configs = append(configs, bestConfig)
 		}
 
@@ -137,7 +137,7 @@ func (ctr *NodeManager) PrepareConfigsRequirements(
 			klog.Errorf("node %s not found", config.associatedGpu.NodeName)
 			continue
 		}
-		var configGPUInNode *GPUDevInfo
+		var configGPUInNode *GPUInfo
 
 		configGPUInNode = node.physicalGPUsMap[config.associatedGpu.UUID]
 
@@ -172,7 +172,7 @@ func (ctr *NodeManager) PrepareConfigsRequirements(
 			}
 			node.availableGPUs = response.AvailableVirtualGpus
 
-			createdGPU := GPUDevInfo{
+			createdGPU := GPUInfo{
 				UUID:                    response.ProvisionedGpu.Name,
 				Mem:                     int64(response.ProvisionedGpu.MemoryBytes),
 				TotalSMPercentage:       config.associatedGpu.TotalSMPercentage,
@@ -214,7 +214,7 @@ func (ctr *NodeManager) PrepareConfigsRequirements(
 	return newConfigs
 }
 
-func getConfigForExclusive(gpu *GPUDevInfo, modelName string, remainingRequiredQPS float64, memory int64) *Config {
+func getConfigForExclusive(gpu *GPUInfo, modelName string, remainingRequiredQPS float64, memory int64) *Config {
 	//for exclusive, no need to consider sm and quota
 
 	//check if gpu is virtual
@@ -244,8 +244,8 @@ func getConfigForExclusive(gpu *GPUDevInfo, modelName string, remainingRequiredQ
 			VGPUUUID:        gpu.UUID,
 			RequiredReplica: 1,
 			QpsPerReplica:   totalQPS,
-			SatisfiableQPS:  totalQPS,
-			remainingQPS:    remainingRequiredQPS - totalQPS,
+			SatisfiableRPS:  totalQPS,
+			remainingRPS:    remainingRequiredQPS - totalQPS,
 			Cost:            float64(gpu.costPerSecond) * float64(gpu.TotalSMPercentage/100),
 			AllocationType:  types.AllocationTypeExclusive,
 		}
@@ -255,7 +255,7 @@ func getConfigForExclusive(gpu *GPUDevInfo, modelName string, remainingRequiredQ
 
 }
 
-func getConfigForFastPod(devInfo *GPUDevInfo, modelName string, remainingRequiredQPS float64, requiredMemory int64) *Config {
+func getConfigForFastPod(devInfo *GPUInfo, modelName string, remainingRequiredQPS float64, requiredMemory int64) *Config {
 
 	var bestConfig *Config
 	for sm := 10; sm <= devInfo.TotalSMPercentage; sm += devInfo.SMAllocationGranularity {
@@ -305,14 +305,14 @@ func getConfigForFastPod(devInfo *GPUDevInfo, modelName string, remainingRequire
 					NodeName:        devInfo.NodeName,
 					RequiredReplica: int(possibleReplicas),
 					QpsPerReplica:   qpsPerReplica,
-					SatisfiableQPS:  achiveableQPS,
-					remainingQPS:    remainingRequiredQPS - achiveableQPS,
+					SatisfiableRPS:  achiveableQPS,
+					remainingRPS:    remainingRequiredQPS - achiveableQPS,
 					Cost:            cost,
 					AllocationType:  types.AllocationTypeFastPod,
 				}
 			} else {
-				better := achiveableQPS >= bestConfig.SatisfiableQPS
-				oldExceeds := bestConfig.remainingQPS < 0
+				better := achiveableQPS >= bestConfig.SatisfiableRPS
+				oldExceeds := bestConfig.remainingRPS < 0
 				newExceeds := remainingRequiredQPS-achiveableQPS < 0
 				if oldExceeds && newExceeds && cost < bestConfig.Cost {
 					better = true
@@ -329,8 +329,8 @@ func getConfigForFastPod(devInfo *GPUDevInfo, modelName string, remainingRequire
 						QpsPerReplica:   qpsPerReplica,
 						NodeName:        devInfo.NodeName,
 						RequiredReplica: int(possibleReplicas),
-						SatisfiableQPS:  achiveableQPS,
-						remainingQPS:    remainingRequiredQPS - achiveableQPS,
+						SatisfiableRPS:  achiveableQPS,
+						remainingRPS:    remainingRequiredQPS - achiveableQPS,
 						Cost:            cost,
 						AllocationType:  types.AllocationTypeFastPod,
 					}
@@ -352,14 +352,14 @@ func normalizeScore(val, other float64) float64 {
 	return 1.0
 }
 
-func extractGPUSFromNode(node *Node) []*GPUDevInfo {
-	gpuInfos := []*GPUDevInfo{}
+func extractGPUSFromNode(node *Node) []*GPUInfo {
+	gpuInfos := []*GPUInfo{}
 
 	allVGPU := node.availableGPUs
 
 	for i, _ := range allVGPU {
 		vgpu := allVGPU[i]
-		var devInfo *GPUDevInfo
+		var devInfo *GPUInfo
 		var memBytes int64
 		var uuid string
 		var ok bool
@@ -385,7 +385,7 @@ func extractGPUSFromNode(node *Node) []*GPUDevInfo {
 }
 
 // gpuScore calculates the weighted score for a GPU
-func gpuScore(g *GPUDevInfo, other *GPUDevInfo, req *ResourceRequest, requestMemory int64, weights map[string]float64) float64 {
+func gpuScore(g *GPUInfo, other *GPUInfo, req *ResourceRequest, requestMemory int64, weights map[string]float64) float64 {
 
 	costScore := normalizeScore(float64(g.costPerSecond), float64(other.costPerSecond))
 	memoryDiff := float64(g.Mem - requestMemory)
@@ -405,7 +405,7 @@ func gpuScore(g *GPUDevInfo, other *GPUDevInfo, req *ResourceRequest, requestMem
 		weights["typeMatch"]*typeMatchScore
 }
 
-func sortGPUInfos(gpuInfos []*GPUDevInfo, req *ResourceRequest, memory int64, initial bool) []*GPUDevInfo {
+func sortGPUInfos(gpuInfos []*GPUInfo, req *ResourceRequest, memory int64, initial bool) []*GPUInfo {
 
 	var weights map[string]float64
 	if req.AllocationType == types.AllocationTypeExclusive {

@@ -32,7 +32,7 @@ func TestGetConfigs_Basic(t *testing.T) {
 	usage := shelf.NewShelf(100)
 
 	// Minimal GPUDevInfo
-	gpu := &GPUDevInfo{
+	gpu := &GPUInfo{
 		GPUType:                 gpuType,
 		UUID:                    "gpu-1",
 		Mem:                     102_000_000, // matches resnet50
@@ -57,7 +57,7 @@ func TestGetConfigs_Basic(t *testing.T) {
 		NodeName:        "node-1",
 		Status:          NodeReady,
 		availableGPUs:   []*seti.VirtualGPU{&vgpu},
-		physicalGPUsMap: map[string]*GPUDevInfo{"gpu-1": gpu},
+		physicalGPUsMap: map[string]*GPUInfo{"gpu-1": gpu},
 	}
 
 	nm := &NodeManager{
@@ -77,7 +77,7 @@ func TestGetConfigs_Basic(t *testing.T) {
 	if len(configs) == 0 {
 		t.Fatalf("Expected at least one config, got 0")
 	}
-	if configs[0].SatisfiableQPS < 10 {
-		t.Errorf("Expected SatisfiableQPS >= 10, got %f", configs[0].SatisfiableQPS)
+	if configs[0].SatisfiableRPS < 10 {
+		t.Errorf("Expected SatisfiableQPS >= 10, got %f", configs[0].SatisfiableRPS)
 	}
 }

@@ -34,7 +34,8 @@ type Node struct {
 
 	availableGPUs []*seti.VirtualGPU //may change
 
-	physicalGPUsMap map[string]*GPUDevInfo
+	physicalGPUsMap map[string]*GPUInfo
+	lock            sync.Mutex
 }
 
 // NodeManager manages node liveness for the autoscaler.

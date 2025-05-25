@@ -134,6 +134,10 @@ func (sp *ShelfPacker) Remove(itemID int) (int, error) {
 	return shelfIdx, nil
 }
 
+func (sp *ShelfPacker) IsEmpty() bool {
+	return len(sp.Shelves) == 0
+}
+
 // maxPlacedCount returns the maximum number of items that can be placed in the shelves of fixed width and height
 func (sp *ShelfPacker) MaxInsertableItems(width float64, height int) int {
 	if width <= 0 || width > 1.0 || height <= 0 || height > sp.MaxHeight {

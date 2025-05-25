@@ -21,11 +21,11 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"slices"
 	"sort"
 	"strconv"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
@@ -33,16 +33,23 @@ import (
 	fastfuncv1 "fastgshare/fastfunc/api/v1"
 
 	fastpodv1 "github.com/KontonGu/FaST-GShare/pkg/apis/fastgshare.caps.in.tum/v1"
-	"github.com/prometheus/common/model"
-
+	"github.com/KontonGu/FaST-GShare/pkg/proto/seti/v1"
 	fasttypes "github.com/KontonGu/FaST-GShare/pkg/types"
+	"github.com/prometheus/common/model"
 )
 
 type FastFunc struct {
-	Name            string
-	currentConfigs  []*Config
-	fastPodToConfig map[string]*Config
-	currentRPS      float64 //current rps of the function based on the current configs
+	Name               string
+	configUUIDToConfig map[string]*Config
+	currentRPSCapacity float64 //current rps of the function based on the current configs
+}
+
+func (f *FastFunc) CurrentConfigs() []*Config {
+	configs := make([]*Config, 0)
+	for _, config := range f.configUUIDToConfig {
+		configs = append(configs, config)
+	}
+	return configs
 }
 
 var fastFuncMap = make(map[string]*FastFunc)
@@ -69,27 +76,18 @@ func (r *FaSTFuncReconciler) persistentReconcile(ctx context.Context) {
 
 		// reconcile for each FaSTFunc
 		for _, fstfunc := range allFaSTfuncs.Items {
-			qps := fstfunc.Spec.MinQps
+			rps := fstfunc.Spec.MinQps
 
-			klog.Infof("FaSTFunc %s has minQps = %d.", fstfunc.ObjectMeta.Name, qps)
-
-			//func request
-			funcRequest := &ResourceRequest{
-				ModelName:      fstfunc.Spec.ModelName,
-				QPS:            float64(qps), //just for testing
-				AllocationType: fasttypes.AllocationType(fstfunc.Spec.AllocationType),
-			}
+			klog.Infof("FaSTFunc %s has minQps = %d.", fstfunc.ObjectMeta.Name, rps)
 
 			funcName := fstfunc.ObjectMeta.Name
 			klog.Infof("Checking FaSTFunc %s.", funcName)
-
-			isNew := fastFuncMap[fstfunc.ObjectMeta.Name] == nil
 
 			// make a Prometheus query to get the RPS of the function
 			query := fmt.Sprintf("rate(gateway_function_invocation_total{function_name='%s.%s'}[10s])", funcName, fstfunc.ObjectMeta.Namespace)
 			klog.Infof("Prometheus Query: %s.", query)
 			queryRes, _, err := r.promv1api.Query(ctx, query, time.Now())
-			curRPS := float64(0.0)
+			rps10s := float64(0.0)
 
 			if err != nil {
 				klog.Errorf("Error Failed to get RPS of function %s: %s.", funcName, err.Error())
@@ -98,14 +96,12 @@ func (r *FaSTFuncReconciler) persistentReconcile(ctx context.Context) {
 
 			if queryRes.(model.Vector).Len() != 0 {
 				klog.Infof("Current rps vec for function %s is %v.", funcName, queryRes)
-				curRPS = float64(queryRes.(model.Vector)[0].Value)
+				rps10s = float64(queryRes.(model.Vector)[0].Value)
 			}
-			klog.Infof("Current rps for function %s is %f.", funcName, curRPS)
-
-			curRPS = math.Max(curRPS, funcRequest.QPS)
+			klog.Infof("Current rps for function %s is %f.", funcName, rps10s)
 
 			// make a Prometheus query to get the RPS of past 30s
-			pastRPS := float64(0.0)
+			rps30s := float64(0.0)
 			pastquery := fmt.Sprintf("rate(gateway_function_invocation_total{function_name='%s.%s'}[30s])", funcName, fstfunc.ObjectMeta.Namespace)
 			// klog.Infof("Prometheus Query: %s.", pastquery)
 			pastqueryVec, _, err := r.promv1api.Query(ctx, pastquery, time.Now())
@@ -115,139 +111,186 @@ func (r *FaSTFuncReconciler) persistentReconcile(ctx context.Context) {
 			}
 			if pastqueryVec.(model.Vector).Len() != 0 {
 				klog.Infof("Past 30s rps vec for function %s is %v.", funcName, pastqueryVec)
-				pastRPS = float64(pastqueryVec.(model.Vector)[0].Value)
+				rps30s = float64(pastqueryVec.(model.Vector)[0].Value)
 			}
-			klog.Infof("Past 30s rps for function %s is %f.", funcName, pastRPS)
+			klog.Infof("Past 30s rps for function %s is %f.", funcName, rps30s)
 
-			// make a Prometheus query to get the RPS of old 30s
-			oldRPS := float64(0.0)
-			oldTime := time.Now().Add(-30 * time.Second)
+			// make a Prometheus query to get the RPS of old 30s in past time.
+			rps30s_earlier := float64(0.0) //before 30s
 			// klog.Infof("Prometheus Query: %s.", pastquery)
-			oldqueryVec, _, err := r.promv1api.Query(ctx, pastquery, oldTime)
+			oldqueryVec, _, err := r.promv1api.Query(ctx, pastquery, time.Now().Add(-30*time.Second))
 			if err != nil {
 				klog.Errorf("Error Failed to get old 30s RPS of function %s.", funcName)
 				continue
 			}
 			if oldqueryVec.(model.Vector).Len() != 0 {
 				klog.Infof("Old 30s rps vec for function %s is %v.", funcName, oldqueryVec)
-				oldRPS = float64(oldqueryVec.(model.Vector)[0].Value)
+				rps30s_earlier = float64(oldqueryVec.(model.Vector)[0].Value)
 			}
-			klog.Infof("Old 30s rps for function %s is %f.", funcName, oldRPS)
+			klog.Infof("Old 30s rps for function %s is %f.", funcName, rps30s_earlier)
 
-			err = r.UpdateFunction(&fstfunc, funcRequest, curRPS, pastRPS, oldRPS, isNew)
+			err = r.UpdateFunction(&fstfunc, rps10s, rps30s, rps30s_earlier, float64(rps))
 			if err != nil {
 				klog.Errorf("Error Failed to update the state of the function %s.", funcName)
 				continue
 			}
+
 		}
 	}
 }
 
 // Get the desired FaSTFunc Specification for scaling
 func (r *FaSTFuncReconciler) UpdateFunction(fastfunc *fastfuncv1.FaSTFunc,
-	funcRequest *ResourceRequest,
-	curRPS, pastRPS, oldRPS float64,
-	isNew bool) error {
-	funccc, ok := fastFuncMap[fastfunc.ObjectMeta.Name]
+	rps10s, rps30s, rps30s_earlier float64,
+	minRps float64,
+) error {
+	funccc, isOldFunction := fastFuncMap[fastfunc.ObjectMeta.Name]
 	var totalRPSCap float64
-	if ok {
-		totalRPSCap = funccc.currentRPS
+	if isOldFunction {
+		totalRPSCap = funccc.currentRPSCapacity
 	} else {
-		totalRPSCap = curRPS
+		totalRPSCap = 0
 	}
 
-	deltaReqs := curRPS - totalRPSCap
+	deltaReqs := rps10s - totalRPSCap
 
-	scaleUp := deltaReqs > 0.2*totalRPSCap
+	scaleUp := deltaReqs >= 0.2*totalRPSCap || !isOldFunction
 
 	scaleDown := deltaReqs < 0 && -deltaReqs > 0.2*totalRPSCap
-
-	if isNew {
-		//new function
-
-	}
 
 	// rps difference
 	klog.Infof("RPS difference (DeltaRPS) = %f.", deltaReqs)
 
+	funcRequest := &ResourceRequest{
+		ModelName:      fastfunc.Spec.ModelName,
+		QPS:            float64(deltaReqs), //just for testing
+		AllocationType: fasttypes.AllocationType(fastfunc.Spec.AllocationType),
+	}
+
 	// KONTON Testing Start
 	if scaleUp {
-		funcRequest.QPS = deltaReqs
-		klog.Infof("Scaling up the function %s. Requested QPS = %f, Current RPS = %f, Past RPS = %f, Old RPS = %f.", fastfunc.ObjectMeta.Name, funcRequest.QPS, curRPS, pastRPS, oldRPS)
-		configslist, err := r.nodeManager.GetConfigs(funcRequest, true)
-		configslist = r.nodeManager.PrepareConfigsRequirements(funcRequest, configslist)
+		klog.Infof("Scaling up the function %s. Requested RPS = %f, Current RPS = %f, Past RPS = %f, Old RPS = %f.",
+			fastfunc.ObjectMeta.Name, funcRequest.QPS, rps10s, rps30s, rps30s_earlier)
+		configslist, err := r.nodeManager.GetConfigs(funcRequest, !isOldFunction)
+		newConfigList := r.nodeManager.PrepareConfigsRequirements(funcRequest, configslist)
 		if err != nil {
 			klog.Errorf("Error Failed to get configs for function %s.", fastfunc.ObjectMeta.Name)
 			return nil
 		}
 
-		fastpods, _ := r.ConvertConfigs2FaSTPods(fastfunc, configslist)
+		fastpods, _ := r.ConvertConfigs2FaSTPods(fastfunc, newConfigList)
 
 		err = r.ReconcileFaSTPod(fastpods)
 		if err != nil {
 			klog.Errorf("Error Failed to reconcile the desired FaSTPods for function %s.", fastfunc.ObjectMeta.Name)
 			return err
 		}
+		//add configs
+		for _, config := range newConfigList {
+			funccc.configUUIDToConfig[config.UUID] = config
+		}
 
 	} else if scaleDown {
 		// scaling down
-		klog.Infof("Scaling down the function %s. Requested QPS = %f, Current RPS = %f, Past RPS = %f, Old RPS = %f.", fastfunc.ObjectMeta.Name, funcRequest.QPS, curRPS, pastRPS, oldRPS)
-		deltaReqs = deltaReqs * (-1)
-		funcRequest.QPS = deltaReqs
-		r.scaleDownFaSTFunc(fastfunc.ObjectMeta.Name, curRPS)
-
+		klog.Infof("Scaling down the function %s. Requested RPS = %f, Current RPS = %f, Past RPS = %f, Old RPS = %f.",
+			fastfunc.ObjectMeta.Name, funcRequest.QPS, rps10s, rps30s, rps30s_earlier)
+		// deltaReqs = deltaReqs * (-1)
+		configsUpdated, configsRemoved := r.scaleDownFaSTFunc(funccc, rps10s)
+		for _, config := range configsUpdated {
+			funccc.currentRPSCapacity -= config.ReducedDelta
+			//update config in gpu
+			isEmpty := config.Config.associatedGpu.ReduceConfig(config.Config, config.NewReplica)
+			if isEmpty {
+				r.destroyGPU(config.Config.associatedGpu)
+			}
+			funccc.configUUIDToConfig[config.Config.UUID] = config.Config
+		}
+		for _, config := range configsRemoved {
+			funccc.currentRPSCapacity -= config.AllocatedRPS
+			//remove config from gpu first
+			isEmpty := config.associatedGpu.DeallocateConfig(config)
+			if isEmpty {
+				r.destroyGPU(config.associatedGpu)
+			}
+			delete(funccc.configUUIDToConfig, config.UUID)
+		}
 	}
+
 	return nil
 }
 
-// scaling down to update the replicas of fastpod of the FaSTFunc to be replica
-func (r *FaSTFuncReconciler) scaleDownFaSTFunc(fastpodName string, newQPS float64) {
+func (r *FaSTFuncReconciler) destroyGPU(gpu *GPUInfo) {
 
-	//get current configs
-	fastFunc, ok := fastFuncMap[fastpodName]
-	if !ok {
-		klog.Errorf("Error Failed to scaling down because of not finding the FaSTFunc %s.", fastpodName)
-		return
+	if gpu.Usage.IsEmpty() && gpu.virtual {
+		node := r.nodeManager.nodes[gpu.NodeName]
+		node.lock.Lock()
+		defer node.lock.Unlock()
+		if node != nil {
+			resp, err := node.GrpcClient.ReleaseVirtualGPU(context.TODO(), &seti.ReleaseVirtualGPURequest{
+				Uuid: gpu.UUID,
+			})
+
+			node.availableGPUs = append(node.availableGPUs, resp.AvailableVirtualGpus...)
+
+			delete(node.physicalGPUsMap, gpu.UUID)
+
+			if err != nil {
+				klog.Errorf("Error Failed to release the virtual GPU %s.", gpu.UUID)
+			}
+		}
 	}
 
-	currentConfigs := fastFunc.currentConfigs
+}
 
-	// Sort configs by AllocatedQPS descending (reduce larger QPS first)
+type ReduceInfo struct {
+	Config       *Config
+	NewReplica   int
+	ReducedDelta float64
+}
+
+// scaling down to update the replicas of fastpod of the FaSTFunc to be replica
+func (r *FaSTFuncReconciler) scaleDownFaSTFunc(fastFunc *FastFunc, newRPS float64) ([]*ReduceInfo, []*Config) {
+
+	currentConfigs := fastFunc.CurrentConfigs()
+
+	// Sort configs by AllocatedRPS descending (reduce larger RPS first)
 	sort.Slice(currentConfigs, func(i, j int) bool {
-		return currentConfigs[i].AllocatedQPS > currentConfigs[j].AllocatedQPS
+		return currentConfigs[i].AllocatedRPS > currentConfigs[j].AllocatedRPS
 	})
 
-	currentQPS := 0.0
+	currentRPS := 0.0
 	for _, c := range currentConfigs {
-		currentQPS += c.AllocatedQPS
+		currentRPS += c.AllocatedRPS
 	}
 
 	toRemove := []*Config{}
 
-	type ReduceInfo struct {
-		Config     *Config
-		NewReplica int
-	}
-	toReduce := make([]ReduceInfo, 0)
+	toUpdate := make([]*ReduceInfo, 0)
+
+	var configsUpdated []*ReduceInfo
+	var configsRemoved []*Config
 
 	for _, config := range currentConfigs {
 
-		if currentQPS <= newQPS {
+		if currentRPS <= newRPS {
 			break
 		}
 
-		qpsPerReplica := config.QpsPerReplica
+		rpsPerReplica := config.QpsPerReplica
 
-		maxRemovableQPS := currentQPS - newQPS
-
+		maxRemovableRPS := currentRPS - newRPS
 		// How many replicas can we remove from this config?
-		maxRemovableReplicas := int(math.Floor(maxRemovableQPS / qpsPerReplica))
-
+		maxRemovableReplicas := int(math.Floor(maxRemovableRPS / rpsPerReplica))
 		if maxRemovableReplicas >= config.AllocatedReplica {
-			//remove the config if it can be removed completely
-			toRemove = append(toRemove, config)
-			currentQPS -= config.AllocatedQPS
-			continue
+			//if current after removal is still greater than newRPS, then we can remove the config
+			if currentRPS-config.AllocatedRPS > newRPS {
+				currentRPS -= config.AllocatedRPS
+				toRemove = append(toRemove, config)
+
+			} else { //if current after removal is less than newRPS, then we can't remove the config and should break
+				break
+			}
+
 		}
 
 		//reduce the replicas of the config
@@ -256,13 +299,16 @@ func (r *FaSTFuncReconciler) scaleDownFaSTFunc(fastpodName string, newQPS float6
 			if newReplica < 1 {
 				newReplica = 1 // Don't go below 1
 			}
-			reducedQPS := float64(newReplica) * qpsPerReplica
-			updatedQPS := currentQPS - (config.AllocatedQPS - reducedQPS)
-			//if the updated QPS is greater than the new QPS, then reduce the replicas
+			updatedRPS := float64(newReplica) * rpsPerReplica
+			reducedDelta := currentRPS - (config.AllocatedRPS - updatedRPS)
+			//if the updated RPS is greater than the new RPS, then reduce the replicas
 
-			if updatedQPS >= newQPS {
-				currentQPS = updatedQPS
-				toReduce = append(toReduce, ReduceInfo{Config: config, NewReplica: newReplica})
+			//if current after reduction is still greater than newRPS, then we can reduce the replicas
+			if currentRPS-reducedDelta > newRPS {
+				currentRPS -= reducedDelta
+				toUpdate = append(toUpdate, &ReduceInfo{Config: config, NewReplica: newReplica, ReducedDelta: reducedDelta})
+			} else { //if current after reduction is less than newRPS, then we can't reduce the replicas and should break
+				break
 			}
 		}
 	}
@@ -271,53 +317,58 @@ func (r *FaSTFuncReconciler) scaleDownFaSTFunc(fastpodName string, newQPS float6
 		//remove pod first
 
 		fastPod := &fastpodv1.FaSTPod{}
-		err := r.Get(context.TODO(), types.NamespacedName{Name: fastpodName, Namespace: "fast-gshare-fn"}, fastPod)
+		err := r.Get(context.TODO(), types.NamespacedName{Name: getFastPodName(fastFunc.Name, config.UUID), Namespace: "fast-gshare-fn"}, fastPod)
 		if err != nil {
-			klog.Errorf("Error Failed to get the FaSTPod %s.", fastpodName)
-			return
+			if errors.IsNotFound(err) {
+				klog.Infof("FaSTPod %s not found, skipping.", getFastPodName(fastFunc.Name, config.UUID))
+				configsRemoved = append(configsRemoved, config)
+				continue
+			}
+
+			klog.Errorf("Error Failed to get the FaSTPod %s.", getFastPodName(fastFunc.Name, config.UUID))
+			continue
 		}
 
 		//delete the FaSTPod
 		err = r.Delete(context.TODO(), fastPod)
 		if err != nil {
-			klog.Errorf("Error Failed to delete the FaSTPod %s.", fastpodName)
-			return
+			klog.Errorf("Error Failed to delete the FaSTPod %s.", getFastPodName(fastFunc.Name, config.UUID))
+			continue
 		}
 
-		//on deletion, update config remove all the configs that are related to the fastpod, release gpu if possible.
-
-		//remove the config from the currentConfigs
-		configIndex := slices.IndexFunc(currentConfigs, func(c *Config) bool {
-			return c.Equal(config)
-		})
-		if configIndex != -1 {
-			currentConfigs = slices.Delete(currentConfigs, configIndex, configIndex+1)
-		}
+		configsRemoved = append(configsRemoved, config)
 
 	}
-	for _, info := range toReduce {
+
+	for _, updateInfo := range toUpdate {
 
 		//get the FaSTPod
 		fastPod := &fastpodv1.FaSTPod{}
-		err := r.Get(context.TODO(), types.NamespacedName{Name: fastpodName, Namespace: "fast-gshare-fn"}, fastPod)
+		err := r.Get(context.TODO(), types.NamespacedName{Name: getFastPodName(fastFunc.Name, updateInfo.Config.UUID), Namespace: "fast-gshare-fn"}, fastPod)
 		if err != nil {
-			klog.Errorf("Error Failed to get the FaSTPod %s.", fastpodName)
+			if errors.IsNotFound(err) {
+				klog.Infof("FaSTPod %s not found, skipping.", getFastPodName(fastFunc.Name, updateInfo.Config.UUID))
+				configsUpdated = append(configsUpdated, updateInfo)
+				continue
+			}
+			klog.Errorf("Error Failed to get the FaSTPod %s.", getFastPodName(fastFunc.Name, updateInfo.Config.UUID))
 			continue
 		}
 		//update the replicas of the FaSTPod
 		existedCopy := fastPod.DeepCopy()
-		replicaInt32 := int32(info.NewReplica)
+		replicaInt32 := int32(updateInfo.NewReplica)
 		existedCopy.Spec.Replicas = &replicaInt32
-		existedCopy.ObjectMeta.Labels["com.openfaas.scale.max"] = strconv.Itoa(info.NewReplica)
-		existedCopy.ObjectMeta.Labels["com.openfaas.scale.min"] = strconv.Itoa(info.NewReplica)
+		existedCopy.ObjectMeta.Labels["com.openfaas.scale.max"] = strconv.Itoa(updateInfo.NewReplica)
+		existedCopy.ObjectMeta.Labels["com.openfaas.scale.min"] = strconv.Itoa(updateInfo.NewReplica)
 		err = r.Update(context.TODO(), existedCopy)
 		if err != nil {
-			klog.Errorf("Error failed to update FaSTPod %s when scaling down.", fastpodName)
-
+			klog.Errorf("Error failed to update FaSTPod %s when scaling down.", getFastPodName(fastFunc.Name, updateInfo.Config.UUID))
+			continue
 		}
-
-		// reduce quota on existing config
+		configsUpdated = append(configsUpdated, updateInfo)
 
 	}
+
+	return configsUpdated, configsRemoved
 
 }
