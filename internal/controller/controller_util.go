@@ -18,21 +18,23 @@ limitations under the License.
 package controller
 
 import (
+	"fmt"
 	"regexp"
 	"strconv"
 )
 
-func getResKeyName(quota int, smPartition int) string {
-	return "-q" + strconv.Itoa(quota) + "-p" + strconv.Itoa(smPartition)
+func getResKeyName(quota float64, smPartition int) string {
+	fromatted := fmt.Sprintf("-q %0.2f-p %d", quota, smPartition)
+	return fromatted
 }
 
-func parseFromKeyName(key string) (int, int) {
+func parseFromKeyName(key string) (float64, int) {
 	r := regexp.MustCompile(`-q(\d+)-p(\d+)`)
 	match := r.FindStringSubmatch(key)
 	if match == nil {
 		return 0, 0
 	}
-	quota, err := strconv.Atoi(match[1])
+	quota, err := strconv.ParseFloat(match[1], 64)
 	if err != nil {
 		return 0, 0
 	}

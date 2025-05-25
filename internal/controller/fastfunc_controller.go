@@ -86,7 +86,7 @@ func (r *FaSTFuncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	_ = log.FromContext(ctx)
 
 	once.Do(func() {
-		go r.persistentReconcile()
+		go r.persistentReconcile(ctx)
 	})
 
 	return ctrl.Result{}, nil

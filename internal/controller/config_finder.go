@@ -1,182 +1,443 @@
 package controller
 
 import (
-	"container/list"
+	"context"
+	"fastgshare/fastfunc/internal/profiling"
+	"fastgshare/fastfunc/internal/shelf"
 	"fmt"
+	"math"
+	"sort"
 
 	"github.com/KontonGu/FaST-GShare/pkg/proto/seti/v1"
 	"github.com/KontonGu/FaST-GShare/pkg/types"
+	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/klog/v2"
 )
 
 type ResourceRequest struct {
-	qps            float64
-	allocationType types.AllocationType
+	ModelName      string
+	QPS            float64
+	AllocationType types.AllocationType
 }
 
-type SelectionResult struct {
-	QuotaReq    float64
-	QuotaLimit  float64
-	SMPartition int //0-100
-	NodeName    string
-	VGPUUUID    string
+type Config struct {
+	AllocationType types.AllocationType
+	UUID           string
+	QuotaReq       float64
+	QuotaLimit     float64
+	MemoryReq      int64
+	SMPartition    int //0-100
+
+	NodeName         string
+	VGPUUUID         string
+	associatedGpu    *GPUDevInfo
+	RequiredReplica  int
+	SatisfiableQPS   float64
+	QpsPerReplica    float64
+	Cost             float64
+	remainingQPS     float64 //negative if exceeds
+	AllocatedReplica int
+	AllocatedQPS     float64
+	shelfItems       map[int]bool
 }
 
-func (ctr *NodeManager) FindBestNode(req *ResourceRequest) (*SelectionResult, error) {
+//make config comparable witrh uuid
 
-	var bestNode *Node
-	var bestVGPU *seti.VirtualGPU
-	bestScore := 1e9 // Initialize to a large number
-	var finalSM float64
+func (c *Config) Equal(other *Config) bool {
+	return c.UUID == other.UUID
+}
 
-	for _, n := range nodeList {
-		node, ok := nodes[n.Name]
+func (ctr *NodeManager) GetConfigs(req *ResourceRequest, initial bool) ([]*Config, error) {
 
-		if !ok {
-			continue
-		}
+	//get required memory
+	requiredMemory, err := GetModelMemory(req.ModelName)
+	if err != nil {
+		return nil, err
+	}
+
+	//get remaining required qps
+	remainingRequiredQPS := req.QPS
+	configs := []*Config{}
+
+	gpuInfos := []*GPUDevInfo{}
+
+	for _, node := range ctr.nodes {
+
 		//check if live
-		if n, ok := nodesLiveness[n.Name]; ok && n.Status != NodeReady {
+		if node.Status != NodeReady {
 			continue
 		}
-		allVGPU := node.vgpus
-		usageMap := node.vGPUID2GPU
 
-		for _, vgpu := range allVGPU {
-			var devInfo *GPUDevInfo
-			var memBytes int64
-			var uuid string
+		gpuInfos = append(gpuInfos, extractGPUSFromNode(node)...)
+	}
 
-			if vgpu.IsProvisioned && vgpu.ProvisionedGpu != nil {
-				uuid = vgpu.ProvisionedGpu.Uuid
-				memBytes = int64(vgpu.ProvisionedGpu.MemoryBytes)
-				devInfo, ok = usageMap[uuid]
-				if !ok {
-					devInfo = &GPUDevInfo{
-						smCount:        int(vgpu.ProvisionedGpu.MultiprocessorCount),
-						SMPercentage:   int(vgpu.SmPercentage),
-						UUID:           uuid,
-						Mem:            memBytes,
-						Usage:          0,
-						UsageMem:       0,
-						FastPodList:    list.New(),
-						MPSPodList:     list.New(),
-						allocationType: types.AllocationTypeNone,
-					}
+	gpuInfos = sortGPUInfos(gpuInfos, req, requiredMemory, initial)
+
+	for _, devInfo := range gpuInfos {
+
+		//check memory fits
+		if !devInfo.FitsMemory(requiredMemory) {
+			continue
+		}
+
+		//if allocation type is exclusive,
+
+		if req.AllocationType == types.AllocationTypeExclusive {
+			//check if gpu is virtual  and add to config
+			if devInfo.virtual {
+				config := getConfigForExclusive(devInfo, req.ModelName, remainingRequiredQPS, requiredMemory)
+				if config != nil {
+					configs = append(configs, config)
 				}
-			} else {
-				memBytes = int64(vgpu.MemoryBytes)
-				uuid = vgpu.Id
-				devInfo = &GPUDevInfo{
-					smCount:        int(vgpu.MultiprocessorCount),
-					SMPercentage:   int(vgpu.SmPercentage),
-					UUID:           uuid,
-					Mem:            memBytes,
-					Usage:          0,
-					UsageMem:       0,
-					FastPodList:    list.New(),
-					MPSPodList:     list.New(),
-					allocationType: types.AllocationTypeNone,
+				remainingRequiredQPS -= config.SatisfiableQPS
+				//if remainingRequiredQPS is negative, it means we have enough qps support so we can break
+				if remainingRequiredQPS <= 0 {
+					break
 				}
+
 			}
 
-			if memBytes == 0 {
+			continue
+		}
+
+		bestConfig := getConfigForFastPod(devInfo, req.ModelName, remainingRequiredQPS, requiredMemory)
+
+		//config from this gpu.
+
+		if bestConfig != nil {
+			remainingRequiredQPS -= bestConfig.SatisfiableQPS
+			configs = append(configs, bestConfig)
+		}
+
+		if remainingRequiredQPS <= 0 {
+			break
+		}
+	}
+
+	klog.Infof("Picked %d configs with satisfied QPS %f and missing QPS %f", len(configs), req.QPS-remainingRequiredQPS, remainingRequiredQPS)
+
+	if len(configs) == 0 {
+		return nil, fmt.Errorf("no suitable selection found")
+	}
+
+	return configs, nil
+}
+
+// PrepareConfigsRequirements prepares the configs for scheduling, removes failed configs
+func (ctr *NodeManager) PrepareConfigsRequirements(
+	req *ResourceRequest,
+	configs []*Config) []*Config {
+
+	var newConfigs []*Config
+
+	for _, config := range configs {
+
+		node, ok := ctr.nodes[config.associatedGpu.NodeName]
+		if !ok {
+			klog.Errorf("node %s not found", config.associatedGpu.NodeName)
+			continue
+		}
+		var configGPUInNode *GPUDevInfo
+
+		configGPUInNode = node.physicalGPUsMap[config.associatedGpu.UUID]
+
+		if configGPUInNode == nil && !config.associatedGpu.virtual { //physical gpu
+			//add to node
+			node, ok := ctr.nodes[config.associatedGpu.NodeName]
+			if !ok {
+				klog.Errorf("node %s not found", config.associatedGpu.NodeName)
+				continue
+			}
+			node.physicalGPUsMap[config.associatedGpu.UUID] = config.associatedGpu
+
+			configGPUInNode = config.associatedGpu
+		} else if configGPUInNode == nil && config.associatedGpu.virtual {
+			//create gpu if virtual
+			node, ok := ctr.nodes[config.associatedGpu.NodeName]
+			if !ok {
+				klog.Errorf("node %s not found", config.associatedGpu.NodeName)
 				continue
 			}
 
-			klog.Infof("KONTON_TEST: gpu used sm usage = %f", devInfo.Usage)
+			ctx := context.Background()
 
-			// Step 10: if not CanFit(G, R) then continue
-			if !canFit(req, devInfo) {
-				klog.Infof("KONTON_TEST: gpu cannot fit %f %f", devInfo.Usage, devInfo.UsageMem)
+			response, err := node.GrpcClient.RequestVirtualGPU(ctx, &seti.RequestVirtualGPURequest{
+				UseMps:    req.AllocationType == types.AllocationTypeFastPod || req.AllocationType == types.AllocationTypeMPS,
+				Profileid: config.associatedGpu.profileID,
+			})
+
+			if err != nil {
+				klog.Errorf("failed to request virtual gpu: %v", err)
+				continue
+			}
+			node.availableGPUs = response.AvailableVirtualGpus
+
+			createdGPU := GPUDevInfo{
+				UUID:                    response.ProvisionedGpu.Name,
+				Mem:                     int64(response.ProvisionedGpu.MemoryBytes),
+				TotalSMPercentage:       config.associatedGpu.TotalSMPercentage,
+				SMAllocationGranularity: 10,
+				NodeName:                config.associatedGpu.NodeName,
+				allocationType:          config.associatedGpu.allocationType,
+				GPUType:                 config.associatedGpu.GPUType,
+				profileID:               config.associatedGpu.profileID,
+				virtual:                 true,
+				ParentUUID:              response.ProvisionedGpu.Name,
+				costPerSecond:           config.associatedGpu.costPerSecond,
+				Usage:                   shelf.NewShelf(config.associatedGpu.TotalSMPercentage),
+			}
+
+			node.physicalGPUsMap[createdGPU.UUID] = &createdGPU
+			configGPUInNode = &createdGPU
+		}
+
+		//set values of config in gpu info
+
+		//configGPUInNode.
+
+		config.associatedGpu = configGPUInNode
+		config.VGPUUUID = configGPUInNode.UUID
+
+		//
+
+		config, err := configGPUInNode.AllocateAndCommitConfig(config)
+		if err != nil {
+			klog.Errorf("failed to allocate and commit config: %v", err)
+
+		}
+
+		if config.AllocatedReplica > 0 {
+			newConfigs = append(newConfigs, config)
+		}
+	}
+
+	return newConfigs
+}
+
+func getConfigForExclusive(gpu *GPUDevInfo, modelName string, remainingRequiredQPS float64, memory int64) *Config {
+	//for exclusive, no need to consider sm and quota
+
+	//check if gpu is virtual
+	if gpu.virtual {
+		//check memory fits
+		if !gpu.FitsMemory(memory) {
+			return nil
+		}
+
+		//get qps per replica
+		totalQPS, ok := profiling.RpsStore.Get(modelName, gpu.GPUType, gpu.TotalSMPercentage, 1.0)
+		if !ok {
+			return nil
+		}
+		//only 1 replica is allowed
+		if totalQPS > remainingRequiredQPS {
+			return nil
+		}
+
+		return &Config{
+			UUID:            string(uuid.NewUUID()),
+			MemoryReq:       memory,
+			associatedGpu:   gpu,
+			QuotaReq:        1.0,
+			QuotaLimit:      1.0,
+			SMPartition:     gpu.TotalSMPercentage,
+			VGPUUUID:        gpu.UUID,
+			RequiredReplica: 1,
+			QpsPerReplica:   totalQPS,
+			SatisfiableQPS:  totalQPS,
+			remainingQPS:    remainingRequiredQPS - totalQPS,
+			Cost:            float64(gpu.costPerSecond) * float64(gpu.TotalSMPercentage/100),
+			AllocationType:  types.AllocationTypeExclusive,
+		}
+	}
+
+	return nil
+
+}
+
+func getConfigForFastPod(devInfo *GPUDevInfo, modelName string, remainingRequiredQPS float64, requiredMemory int64) *Config {
+
+	var bestConfig *Config
+	for sm := 10; sm <= devInfo.TotalSMPercentage; sm += devInfo.SMAllocationGranularity {
+		for quota := 0.2; quota <= 1.0; quota += 0.2 {
+			canFit, err := devInfo.Fits(sm, quota, requiredMemory)
+			if err != nil {
+				continue
+			}
+			if !canFit {
 				continue
 			}
 
-			// Step 13: if R.gpu type != G.gpu type, adjust SMs
-			var adjSM int
-			var smRatio float64
-			if req.AllocationType == types.AllocationTypeMPS {
-				adjSM = 0
-				smRatio = 0.0
+			qpsPerReplica, ok := profiling.RpsStore.Get(modelName, devInfo.GPUType, sm, quota)
+			if !ok {
+				continue
+			}
+
+			if qpsPerReplica == 0 {
+				continue
+			}
+
+			possibleReplicasBySM := devInfo.Usage.MaxInsertableItems(quota, sm)
+
+			possibleReplicasByMemory := math.Floor(float64(devInfo.AvailableMemory()) / float64(requiredMemory))
+
+			possibleReplicas := math.Min(float64(possibleReplicasBySM), float64(possibleReplicasByMemory))
+
+			achiveableQPS := qpsPerReplica * possibleReplicas
+
+			//if finalQPS exceeds the limit, we need to reduce the replicas
+			if achiveableQPS > remainingRequiredQPS {
+				possibleReplicas = math.Ceil(remainingRequiredQPS / qpsPerReplica)
+				achiveableQPS = qpsPerReplica * possibleReplicas
+			}
+
+			cost := float64(devInfo.costPerSecond) * float64(sm/100) * quota * possibleReplicas
+
+			if bestConfig == nil {
+				bestConfig = &Config{
+					UUID:            string(uuid.NewUUID()),
+					MemoryReq:       requiredMemory,
+					associatedGpu:   devInfo,
+					QuotaReq:        quota,
+					QuotaLimit:      math.Min(1.0, quota+0.3),
+					SMPartition:     sm,
+					VGPUUUID:        devInfo.UUID,
+					NodeName:        devInfo.NodeName,
+					RequiredReplica: int(possibleReplicas),
+					QpsPerReplica:   qpsPerReplica,
+					SatisfiableQPS:  achiveableQPS,
+					remainingQPS:    remainingRequiredQPS - achiveableQPS,
+					Cost:            cost,
+					AllocationType:  types.AllocationTypeFastPod,
+				}
 			} else {
-				if req.RequestedGPUType != nil && vgpu.ProvisionedGpu != nil && *req.RequestedGPUType != vgpu.ProvisionedGpu.Name {
-					adjSM, err = TransformedSM(req, vgpu)
-					if err != nil {
-						klog.Errorf("error TransformedSM: %s", err)
-						continue
+				better := achiveableQPS >= bestConfig.SatisfiableQPS
+				oldExceeds := bestConfig.remainingQPS < 0
+				newExceeds := remainingRequiredQPS-achiveableQPS < 0
+				if oldExceeds && newExceeds && cost < bestConfig.Cost {
+					better = true
+				}
+				if better {
+					bestConfig = &Config{
+						UUID:            string(uuid.NewUUID()),
+						MemoryReq:       requiredMemory,
+						associatedGpu:   devInfo,
+						QuotaReq:        quota,
+						QuotaLimit:      math.Min(1.0, quota+0.3),
+						SMPartition:     sm,
+						VGPUUUID:        devInfo.UUID,
+						QpsPerReplica:   qpsPerReplica,
+						NodeName:        devInfo.NodeName,
+						RequiredReplica: int(possibleReplicas),
+						SatisfiableQPS:  achiveableQPS,
+						remainingQPS:    remainingRequiredQPS - achiveableQPS,
+						Cost:            cost,
+						AllocationType:  types.AllocationTypeFastPod,
 					}
-				} else if req.SMPercentage != nil {
-					adjSM = *req.SMPercentage
-				} else {
-					adjSM = 0
 				}
-				if devInfo.smCount > 0 {
-					smRatio = float64(adjSM) / float64(devInfo.smCount)
-				} else {
-					smRatio = 0.0
-				}
-			}
-
-			// Step 19: mem ratio = R.mem req / G.total memory
-			var memRatio float64
-			if devInfo.Mem > 0 {
-				memRatio = float64(req.Memory) / float64(devInfo.Mem)
-			} else {
-				memRatio = 0.0
-			}
-
-			// Affinity priority
-			affinity_priority := 0.0
-			gpuSet, ok := fastPodToPhysicalGPUs[req.podKey]
-			klog.Infof("KONTON_TEST: gpuSet = %v", gpuSet)
-
-			if ok && gpuSet[vgpu.ProvisionedGpu.ParentUuid] {
-				klog.Infof("KONTON_TEST: gpu affinity priority = %f", affinity_priority)
-
-				affinity_priority = 10.0
-			} else {
-				klog.Info("No affinity priority")
-			}
-			klog.Infof("KONTON_TEST: gpu affinity priority = %f", affinity_priority)
-
-			// Mode priority
-			mode_priority := 0.0
-			if req.AllocationType == devInfo.allocationType && req.AllocationType != types.AllocationTypeExclusive {
-				mode_priority = 3.0
-			}
-
-			// GPU priority
-			gpu_priority := 0.0
-			if req.RequestedGPUType != nil && vgpu.ProvisionedGpu != nil && *req.RequestedGPUType == vgpu.ProvisionedGpu.Name {
-				gpu_priority = 1.0
-			}
-
-			// Step 22-27: scoring
-			var score float64
-			if req.AllocationType == types.AllocationTypeMPS || smRatio <= memRatio {
-				// Mem-heavy: balance SMs (or always for MPS)
-				score = (devInfo.Usage - float64(adjSM)) / 100
-			} else {
-				// SM-heavy: balance memory
-				score = (float64((devInfo.Mem - devInfo.UsageMem) - req.Memory)) / float64(devInfo.Mem)
-			}
-			score = score - affinity_priority - mode_priority - gpu_priority
-
-			klog.Infof("score for gpu %s , with parent %s is %f", vgpu.Id, vgpu.ProvisionedGpu.ParentUuid, score)
-
-			if score < bestScore {
-				bestScore = score
-				bestNode = node
-				bestVGPU = vgpu
-				finalSM = float64(adjSM)
 			}
 		}
 	}
 
-	if bestNode != nil && bestVGPU != nil {
-		// Allocation logic would go here (not implemented)
-		klog.Infof("Selected GPU: %s on node %s with score %f and finalSM %f", bestVGPU.Id, bestNode.hostName, bestScore, finalSM)
-		return &SelectionResult{fastPodKey: req.podKey, Node: bestNode, VGPU: bestVGPU, FinalSM: int(finalSM)}, nil
+	return bestConfig
+
+}
+
+// normalizeScore returns a normalized score (higher is better) for two values, lower is better
+func normalizeScore(val, other float64) float64 {
+	max := math.Max(val, other)
+	if max > 0 {
+		return 1.0 - (val / max)
 	}
-	return nil, fmt.Errorf("no suitable candidates found")
+	return 1.0
+}
+
+func extractGPUSFromNode(node *Node) []*GPUDevInfo {
+	gpuInfos := []*GPUDevInfo{}
+
+	allVGPU := node.availableGPUs
+
+	for i, _ := range allVGPU {
+		vgpu := allVGPU[i]
+		var devInfo *GPUDevInfo
+		var memBytes int64
+		var uuid string
+		var ok bool
+		if vgpu.IsProvisioned && vgpu.ProvisionedGpu != nil {
+			uuid = vgpu.ProvisionedGpu.Uuid
+			memBytes = int64(vgpu.ProvisionedGpu.MemoryBytes)
+			devInfo, ok = node.physicalGPUsMap[uuid]
+			if !ok {
+				devInfo = NewGPUDevInfo(vgpu.PhysicalGpuType, false, nil, uuid, memBytes, int(vgpu.SmPercentage), 10)
+			}
+		} else {
+			//unprovisioned
+			memBytes = int64(vgpu.MemoryBytes)
+			uuid = vgpu.Id
+			devInfo = NewGPUDevInfo(vgpu.PhysicalGpuType, true, vgpu.Profileid, uuid, memBytes, int(vgpu.SmPercentage), 10)
+		}
+
+		gpuInfos = append(gpuInfos, devInfo)
+
+	}
+
+	return gpuInfos
+}
+
+// gpuScore calculates the weighted score for a GPU
+func gpuScore(g *GPUDevInfo, other *GPUDevInfo, req *ResourceRequest, requestMemory int64, weights map[string]float64) float64 {
+
+	costScore := normalizeScore(float64(g.costPerSecond), float64(other.costPerSecond))
+	memoryDiff := float64(g.Mem - requestMemory)
+	otherMemoryDiff := float64(other.Mem - requestMemory)
+	memoryDiffScore := normalizeScore(memoryDiff, otherMemoryDiff)
+	smScore := normalizeScore(float64(g.TotalSMPercentage), float64(other.TotalSMPercentage))
+	memSizeScore := normalizeScore(float64(g.Mem), float64(other.Mem))
+	typeMatchScore := 0.0
+	if g.allocationType == req.AllocationType {
+		typeMatchScore = 1.0
+	}
+
+	return weights["cost"]*costScore +
+		weights["memoryDiff"]*memoryDiffScore +
+		weights["sm"]*smScore +
+		weights["memSize"]*memSizeScore +
+		weights["typeMatch"]*typeMatchScore
+}
+
+func sortGPUInfos(gpuInfos []*GPUDevInfo, req *ResourceRequest, memory int64, initial bool) []*GPUDevInfo {
+
+	var weights map[string]float64
+	if req.AllocationType == types.AllocationTypeExclusive {
+
+		weights = map[string]float64{
+			"cost":       0.4,
+			"memoryDiff": 0.3,
+			"sm":         0.2,
+			"memSize":    0.1,
+			"typeMatch":  0.0,
+		}
+	} else {
+
+		//if initial, prioritize cheaper GPUs
+		costWeight := 0.4
+		if initial {
+			costWeight = 0.6
+		}
+		weights = map[string]float64{
+			"cost":       costWeight,
+			"memoryDiff": 0.0,
+			"sm":         0.1,
+			"memSize":    0.1,
+			"typeMatch":  0.3,
+		}
+	}
+
+	sort.Slice(gpuInfos, func(i, j int) bool {
+		iScore := gpuScore(gpuInfos[i], gpuInfos[j], req, memory, weights)
+		jScore := gpuScore(gpuInfos[j], gpuInfos[i], req, memory, weights)
+		return iScore > jScore
+	})
+
+	return gpuInfos
 }

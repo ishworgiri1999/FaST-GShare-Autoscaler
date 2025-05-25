@@ -39,6 +39,14 @@ spec:
           spec:
             description: FaSTFuncSpec defines the desired state of FaSTFunc
             properties:
+              allocationType:
+                description: AllocationType is the type of allocation that the function
+                  should handle.
+                enum:
+                - FASTPOD
+                - EXCLUSIVE
+                - MPS
+                type: string
               minQps:
                 description: MinQps is the minimum number of requests per second that
                   the function should handle.

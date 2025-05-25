@@ -30,11 +30,11 @@ type Node struct {
 	Status        NodeStatus
 	GrpcClient    *grpcclient.GrpcClient
 	LastHeartbeat time.Time
+	NodeName      string
 
-	availableGPUs []seti.VirtualGPU
+	availableGPUs []*seti.VirtualGPU //may change
 
-	uuid2gpu map[string]GPUDevInfo
-	gpu2uuid map[string]string
+	physicalGPUsMap map[string]*GPUDevInfo
 }
 
 // NodeManager manages node liveness for the autoscaler.
@@ -176,7 +176,7 @@ func (nm *NodeManager) handleNodeConnection(conn net.Conn) {
 		klog.Errorf("Error: %v", err)
 	}
 
-	response, err := client.GetAvailableGPUs(context.TODO())
+	response, err := client.GetAvailableGPUs(context.Background())
 	if err != nil {
 		klog.Errorf("Error while getting the available GPUs from the node configurator.")
 	}
@@ -202,6 +202,7 @@ func (nm *NodeManager) handleNodeConnection(conn net.Conn) {
 		IP:            nodeIP,
 		GrpcPort:      helloMessage.GrpcPort,
 		LastHeartbeat: time.Now(),
+		NodeName:      nodeName,
 		Status:        NodeReady,
 	}
 	nm.nodesMtx.Unlock()

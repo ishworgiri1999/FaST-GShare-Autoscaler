@@ -40,6 +40,10 @@ type FaSTFuncSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	ModelName string `json:"modelName,omitempty"`
 
+	// AllocationType is the type of allocation that the function should handle.
+	// +kubebuilder:validation:Enum=FASTPOD;EXCLUSIVE;MPS;
+	AllocationType string `json:"allocationType,omitempty"`
+
 	// Selector is a label query over pods that should match the replica count.
 	// Label keys and values that must match in order to be controlled by this replica set.
 	// It must match the pod template's labels.
