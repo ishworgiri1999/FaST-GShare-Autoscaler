@@ -147,6 +147,13 @@ func (r *FaSTFuncReconciler) UpdateFunction(fastfunc *fastfuncv1.FaSTFunc,
 	minRps float64,
 ) error {
 	funccc, isOldFunction := fastFuncMap[fastfunc.ObjectMeta.Name]
+	//if the function is not in the map, create a new one
+	if funccc == nil {
+		funccc = &FastFunc{
+			Name:               fastfunc.ObjectMeta.Name,
+			configUUIDToConfig: make(map[string]*Config),
+		}
+	}
 	var totalRPSCap float64
 	if isOldFunction {
 		totalRPSCap = funccc.currentRPSCapacity
@@ -166,7 +173,7 @@ func (r *FaSTFuncReconciler) UpdateFunction(fastfunc *fastfuncv1.FaSTFunc,
 	funcRequest := &ResourceRequest{
 		ModelName:      fastfunc.Spec.ModelName,
 		QPS:            float64(deltaReqs), //just for testing
-		AllocationType: fasttypes.AllocationType(fastfunc.Spec.AllocationType),
+		AllocationType: fasttypes.GetAllocationType(fastfunc.Spec.AllocationType),
 	}
 
 	// KONTON Testing Start
@@ -176,6 +183,8 @@ func (r *FaSTFuncReconciler) UpdateFunction(fastfunc *fastfuncv1.FaSTFunc,
 		configslist, err := r.nodeManager.GetConfigs(funcRequest, !isOldFunction)
 		newConfigList := r.nodeManager.PrepareConfigsRequirements(funcRequest, configslist)
 		if err != nil {
+			// TODO: handle this error
+			klog.Errorf("Error: %v", err)
 			klog.Errorf("Error Failed to get configs for function %s.", fastfunc.ObjectMeta.Name)
 			return nil
 		}
@@ -190,6 +199,7 @@ func (r *FaSTFuncReconciler) UpdateFunction(fastfunc *fastfuncv1.FaSTFunc,
 		//add configs
 		for _, config := range newConfigList {
 			funccc.configUUIDToConfig[config.UUID] = config
+			funccc.currentRPSCapacity += config.AllocatedRPS
 		}
 
 	} else if scaleDown {

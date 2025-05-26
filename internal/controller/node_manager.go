@@ -177,15 +177,35 @@ func (nm *NodeManager) handleNodeConnection(conn net.Conn) {
 		klog.Errorf("Error: %v", err)
 	}
 
-	response, err := client.GetAvailableGPUs(context.Background())
+	klog.Infof("Connected to the node configurator %s : %s:%d", nodeName, nodeIP, helloMessage.GrpcPort)
+
+	health, err := client.Health(context.TODO())
 	if err != nil {
-		klog.Errorf("Error while getting the available GPUs from the node configurator.")
+		klog.Errorf("Error while checking the health of the node configurator.")
+		klog.Errorf("Error: %v", err)
+		return
+	}
+	if !health.Healthy {
+		klog.Errorf("Node %s is not healthy (health says not healthy)", nodeName)
+		return
 	}
 
-	if response.Gpus != nil {
+	response, err := client.GetAvailableGPUs(context.Background())
+	if err != nil {
+		klog.Errorf("Error: %v", err)
+		klog.Errorf("Error while getting the available GPUs from the node configurator.")
+		return
+	}
+
+	if response != nil && response.Gpus != nil {
 		klog.Infof("Node %s has %d available GPUs", nodeName, len(response.Gpus))
 	} else {
 		klog.Infof("Node %s has no available GPUs", nodeName)
+	}
+	for _, gpu := range response.Gpus {
+		if gpu.ProvisionedGpu != nil {
+			klog.Infof("GPU %s", gpu.ProvisionedGpu.Uuid)
+		}
 	}
 
 	// Always create/replace node info after handshake
@@ -200,11 +220,14 @@ func (nm *NodeManager) handleNodeConnection(conn net.Conn) {
 	}
 	nm.nodesMtx.Lock()
 	nm.nodes[nodeName] = &Node{
-		IP:            nodeIP,
-		GrpcPort:      helloMessage.GrpcPort,
-		LastHeartbeat: time.Now(),
-		NodeName:      nodeName,
-		Status:        NodeReady,
+		IP:              nodeIP,
+		GrpcPort:        helloMessage.GrpcPort,
+		GrpcClient:      client,
+		LastHeartbeat:   time.Now(),
+		NodeName:        nodeName,
+		Status:          NodeReady,
+		physicalGPUsMap: make(map[string]*GPUInfo),
+		availableGPUs:   response.Gpus,
 	}
 	nm.nodesMtx.Unlock()
 

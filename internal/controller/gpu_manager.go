@@ -103,7 +103,7 @@ func (g *GPUInfo) ReduceConfig(config *Config, newReplicaCount int) bool {
 	return g.Usage.IsEmpty()
 }
 
-func NewGPUDevInfo(gpuType string, virtual bool, profileID *uint32, uuid string, mem int64, totalSMPercentage int, smAllocationGranularity int) *GPUInfo {
+func NewGPUDevInfo(nodeName string, gpuType string, virtual bool, profileID *uint32, uuid string, mem int64, totalSMPercentage int, smAllocationGranularity int) *GPUInfo {
 
 	cost := GetCost(gpuType)
 	gpuDevInfo := &GPUInfo{
@@ -111,6 +111,7 @@ func NewGPUDevInfo(gpuType string, virtual bool, profileID *uint32, uuid string,
 		profileID:               profileID,
 		GPUType:                 gpuType,
 		UUID:                    uuid,
+		NodeName:                nodeName,
 		Mem:                     mem,
 		UsageMem:                0,
 		TotalSMPercentage:       totalSMPercentage,
@@ -158,8 +159,8 @@ func (g *GPUInfo) Fits(smPercentage int, quota float64, memory int64) (bool, err
 }
 
 var costsPerSecondMap map[string]int = map[string]int{
-	"A100":  400, // Example cost per hour for A100 GPU (cents per hour)
-	"T1000": 40,  // Example cost per hour for T1000 GPU (cents per hour)
+	"NVIDIA A100-PCIE-40GB": 400,
+	"NVIDIA T1000":          100,
 }
 
 func GetCost(gpuType string) int {

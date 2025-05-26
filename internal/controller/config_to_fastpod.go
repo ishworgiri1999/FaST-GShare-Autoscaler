@@ -43,6 +43,8 @@ func (r *FaSTFuncReconciler) ConvertConfigs2FaSTPods(fastfunc *fastfuncv1.FaSTFu
 		extendedAnnotations[fastpodv1.FaSTGShareGPUQuotaLimit] = fmt.Sprintf("%0.2f", config.QuotaLimit)
 		extendedAnnotations[fastpodv1.FaSTGShareGPUSMPartition] = smPartition
 		extendedAnnotations[fastpodv1.FaSTGShareGPUMemory] = mem
+		extendedAnnotations[fastpodv1.FaSTGShareNodeName] = config.NodeName
+		extendedAnnotations[fastpodv1.FaSTGShareVGPUID] = config.VGPUUUID
 		extendedAnnotations[fastpodv1.FastGshareAllocationType] = string(config.AllocationType)
 		extendedAnnotations["config_UUID"] = config.UUID
 		extendedAnnotations["rps"] = fmt.Sprintf("%0.2f", config.AllocatedRPS)

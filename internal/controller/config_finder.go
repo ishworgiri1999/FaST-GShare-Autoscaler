@@ -66,6 +66,7 @@ func (ctr *NodeManager) GetConfigs(req *ResourceRequest, initial bool) ([]*Confi
 
 		//check if live
 		if node.Status != NodeReady {
+			klog.Infof("Node %s is not ready skipping..", node.NodeName)
 			continue
 		}
 
@@ -78,15 +79,33 @@ func (ctr *NodeManager) GetConfigs(req *ResourceRequest, initial bool) ([]*Confi
 
 		//check memory fits
 		if !devInfo.FitsMemory(requiredMemory) {
+			klog.Infof("GPU %s does not fit memory", devInfo.UUID)
 			continue
 		}
 
 		//if allocation type is exclusive,
 
 		if req.AllocationType == types.AllocationTypeExclusive {
+			klog.Infof("Allocation type is exclusive")
 			//check if gpu is virtual  and add to config
 			if devInfo.virtual {
-				config := getConfigForExclusive(devInfo, req.ModelName, remainingRequiredQPS, requiredMemory)
+				klog.Infof("GPU %s is virtual", devInfo.UUID)
+				config, err := getConfigForExclusive(devInfo, req.ModelName, requiredMemory)
+
+				if err != nil {
+					klog.Infof("GPU %s does not have config: error %v", devInfo.UUID, err)
+					continue
+				}
+
+				klog.Infof("GPU %s has config", devInfo.UUID)
+				configs = append(configs, config)
+				remainingRequiredQPS -= config.SatisfiableRPS
+				//if remainingRequiredQPS is negative, it means we have enough qps support so we can break
+				if remainingRequiredQPS <= 0 {
+					break
+				}
+
+				klog.Infof("Config: %v", config)
 				if config != nil {
 					configs = append(configs, config)
 				}
@@ -162,6 +181,8 @@ func (ctr *NodeManager) PrepareConfigsRequirements(
 
 			ctx := context.Background()
 
+			klog.Infof("node client: %v", node.GrpcClient)
+
 			response, err := node.GrpcClient.RequestVirtualGPU(ctx, &seti.RequestVirtualGPURequest{
 				UseMps:    req.AllocationType == types.AllocationTypeFastPod || req.AllocationType == types.AllocationTypeMPS,
 				Profileid: config.associatedGpu.profileID,
@@ -174,22 +195,23 @@ func (ctr *NodeManager) PrepareConfigsRequirements(
 			node.availableGPUs = response.AvailableVirtualGpus
 
 			createdGPU := GPUInfo{
-				UUID:                    response.ProvisionedGpu.Name,
+				NodeName:                config.associatedGpu.NodeName,
+				UUID:                    response.ProvisionedGpu.Uuid,
 				Mem:                     int64(response.ProvisionedGpu.MemoryBytes),
 				TotalSMPercentage:       config.associatedGpu.TotalSMPercentage,
 				SMAllocationGranularity: 10,
-				NodeName:                config.associatedGpu.NodeName,
 				allocationType:          config.associatedGpu.allocationType,
 				GPUType:                 config.associatedGpu.GPUType,
 				profileID:               config.associatedGpu.profileID,
 				virtual:                 true,
-				ParentUUID:              response.ProvisionedGpu.Name,
+				ParentUUID:              response.ProvisionedGpu.ParentUuid,
 				costPerSecond:           config.associatedGpu.costPerSecond,
 				Usage:                   shelf.NewShelf(config.associatedGpu.TotalSMPercentage),
 			}
 
 			node.physicalGPUsMap[createdGPU.UUID] = &createdGPU
 			configGPUInNode = &createdGPU
+			config.associatedGpu = configGPUInNode
 		}
 
 		//set values of config in gpu info
@@ -215,44 +237,46 @@ func (ctr *NodeManager) PrepareConfigsRequirements(
 	return newConfigs
 }
 
-func getConfigForExclusive(gpu *GPUInfo, modelName string, remainingRequiredQPS float64, memory int64) *Config {
+func getConfigForExclusive(gpu *GPUInfo, modelName string, memory int64) (*Config, error) {
 	//for exclusive, no need to consider sm and quota
 
 	//check if gpu is virtual
 	if gpu.virtual {
 		//check memory fits
 		if !gpu.FitsMemory(memory) {
-			return nil
+			return nil, fmt.Errorf("GPU %s does not fit memory", gpu.UUID)
 		}
 
 		//get qps per replica
-		totalQPS, ok := profiling.RpsStore.Get(modelName, gpu.GPUType, gpu.TotalSMPercentage, 1.0)
-		if !ok {
-			return nil
-		}
-		//only 1 replica is allowed
-		if totalQPS > remainingRequiredQPS {
-			return nil
+		totalQPS := profiling.RpsStore.PredictQPS(modelName, gpu.GPUType, gpu.TotalSMPercentage, 1.0)
+
+		if totalQPS == 0 {
+			return nil, fmt.Errorf("GPU %s does not have qps per replica", gpu.UUID)
 		}
 
 		return &Config{
-			UUID:            string(uuid.NewUUID()),
-			MemoryReq:       memory,
-			associatedGpu:   gpu,
-			QuotaReq:        1.0,
-			QuotaLimit:      1.0,
-			SMPartition:     gpu.TotalSMPercentage,
-			VGPUUUID:        gpu.UUID,
-			RequiredReplica: 1,
-			QpsPerReplica:   totalQPS,
-			SatisfiableRPS:  totalQPS,
-			remainingRPS:    remainingRequiredQPS - totalQPS,
-			Cost:            float64(gpu.costPerSecond) * float64(gpu.TotalSMPercentage/100),
-			AllocationType:  types.AllocationTypeExclusive,
-		}
+			UUID:             string(uuid.NewUUID()),
+			shelfItems:       make(map[int]bool),
+			MemoryReq:        memory,
+			associatedGpu:    gpu,
+			QuotaReq:         1.0,
+			QuotaLimit:       1.0,
+			SMPartition:      gpu.TotalSMPercentage,
+			VGPUUUID:         gpu.UUID,
+			NodeName:         gpu.NodeName,
+			RequiredReplica:  1,
+			QpsPerReplica:    totalQPS,
+			SatisfiableRPS:   totalQPS,
+			AllocatedReplica: 1,
+			AllocatedRPS:     totalQPS,
+
+			remainingRPS:   0,
+			Cost:           float64(gpu.costPerSecond) * float64(gpu.TotalSMPercentage/100),
+			AllocationType: types.AllocationTypeExclusive,
+		}, nil
 	}
 
-	return nil
+	return nil, nil
 
 }
 
@@ -298,6 +322,7 @@ func getConfigForFastPod(devInfo *GPUInfo, modelName string, remainingRequiredQP
 				bestConfig = &Config{
 					UUID:            string(uuid.NewUUID()),
 					MemoryReq:       requiredMemory,
+					shelfItems:      make(map[int]bool),
 					associatedGpu:   devInfo,
 					QuotaReq:        quota,
 					QuotaLimit:      math.Min(1.0, quota+0.3),
@@ -322,6 +347,7 @@ func getConfigForFastPod(devInfo *GPUInfo, modelName string, remainingRequiredQP
 					bestConfig = &Config{
 						UUID:            string(uuid.NewUUID()),
 						MemoryReq:       requiredMemory,
+						shelfItems:      make(map[int]bool),
 						associatedGpu:   devInfo,
 						QuotaReq:        quota,
 						QuotaLimit:      math.Min(1.0, quota+0.3),
@@ -369,13 +395,27 @@ func extractGPUSFromNode(node *Node) []*GPUInfo {
 			memBytes = int64(vgpu.ProvisionedGpu.MemoryBytes)
 			devInfo, ok = node.physicalGPUsMap[uuid]
 			if !ok {
-				devInfo = NewGPUDevInfo(vgpu.PhysicalGpuType, false, nil, uuid, memBytes, int(vgpu.SmPercentage), 10)
+				devInfo = NewGPUDevInfo(
+					node.NodeName,
+					vgpu.PhysicalGpuType,
+					false,
+					nil,
+					uuid,
+					memBytes,
+					int(vgpu.SmPercentage), 10)
 			}
 		} else {
 			//unprovisioned
 			memBytes = int64(vgpu.MemoryBytes)
 			uuid = vgpu.Id
-			devInfo = NewGPUDevInfo(vgpu.PhysicalGpuType, true, vgpu.Profileid, uuid, memBytes, int(vgpu.SmPercentage), 10)
+			devInfo = NewGPUDevInfo(
+				node.NodeName,
+				vgpu.PhysicalGpuType,
+				true,
+				vgpu.Profileid,
+				uuid,
+				memBytes,
+				int(vgpu.SmPercentage), 10)
 		}
 
 		gpuInfos = append(gpuInfos, devInfo)
