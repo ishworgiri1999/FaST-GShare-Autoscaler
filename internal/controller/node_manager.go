@@ -202,11 +202,6 @@ func (nm *NodeManager) handleNodeConnection(conn net.Conn) {
 	} else {
 		klog.Infof("Node %s has no available GPUs", nodeName)
 	}
-	for _, gpu := range response.Gpus {
-		if gpu.ProvisionedGpu != nil {
-			klog.Infof("GPU %s", gpu.ProvisionedGpu.Uuid)
-		}
-	}
 
 	// Always create/replace node info after handshake
 

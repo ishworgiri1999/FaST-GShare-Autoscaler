@@ -86,12 +86,9 @@ func (ctr *NodeManager) GetConfigs(req *ResourceRequest, initial bool) ([]*Confi
 		//if allocation type is exclusive,
 
 		if req.AllocationType == types.AllocationTypeExclusive {
-			klog.Infof("Allocation type is exclusive")
 			//check if gpu is virtual  and add to config
 			if devInfo.virtual {
-				klog.Infof("GPU %s is virtual", devInfo.UUID)
 				config, err := getConfigForExclusive(devInfo, req.ModelName, requiredMemory)
-
 				if err != nil {
 					klog.Infof("GPU %s does not have config: error %v", devInfo.UUID, err)
 					continue
@@ -148,6 +145,9 @@ func (ctr *NodeManager) PrepareConfigsRequirements(
 	req *ResourceRequest,
 	configs []*Config) []*Config {
 
+	ctr.nodesMtx.Lock()
+	defer ctr.nodesMtx.Unlock()
+
 	var newConfigs []*Config
 
 	for _, config := range configs {
@@ -200,7 +200,6 @@ func (ctr *NodeManager) PrepareConfigsRequirements(
 				Mem:                     int64(response.ProvisionedGpu.MemoryBytes),
 				TotalSMPercentage:       config.associatedGpu.TotalSMPercentage,
 				SMAllocationGranularity: 10,
-				allocationType:          config.associatedGpu.allocationType,
 				GPUType:                 config.associatedGpu.GPUType,
 				profileID:               config.associatedGpu.profileID,
 				virtual:                 true,
@@ -244,14 +243,14 @@ func getConfigForExclusive(gpu *GPUInfo, modelName string, memory int64) (*Confi
 	if gpu.virtual {
 		//check memory fits
 		if !gpu.FitsMemory(memory) {
-			return nil, fmt.Errorf("GPU %s does not fit memory", gpu.UUID)
+			return nil, fmt.Errorf("GPU %s: %s does not fit memory", gpu.Name, gpu.GPUType)
 		}
 
 		//get qps per replica
 		totalQPS := profiling.RpsStore.PredictQPS(modelName, gpu.GPUType, gpu.TotalSMPercentage, 1.0)
 
 		if totalQPS == 0 {
-			return nil, fmt.Errorf("GPU %s does not have qps per replica", gpu.UUID)
+			return nil, fmt.Errorf("GPU %s: %s does not have qps per replica", gpu.Name, gpu.GPUType)
 		}
 
 		return &Config{
@@ -384,6 +383,7 @@ func extractGPUSFromNode(node *Node) []*GPUInfo {
 
 	allVGPU := node.availableGPUs
 
+	//exlcude exclusive gpus
 	for i, _ := range allVGPU {
 		vgpu := allVGPU[i]
 		var devInfo *GPUInfo
@@ -405,6 +405,7 @@ func extractGPUSFromNode(node *Node) []*GPUInfo {
 					int(vgpu.SmPercentage), 10)
 			}
 		} else {
+
 			//unprovisioned
 			memBytes = int64(vgpu.MemoryBytes)
 			uuid = vgpu.Id
@@ -418,7 +419,10 @@ func extractGPUSFromNode(node *Node) []*GPUInfo {
 				int(vgpu.SmPercentage), 10)
 		}
 
-		gpuInfos = append(gpuInfos, devInfo)
+		//exclude exclusive gpus
+		if devInfo.allocationType != types.AllocationTypeExclusive {
+			gpuInfos = append(gpuInfos, devInfo)
+		}
 
 	}
 

@@ -144,8 +144,10 @@ func (r *FaSTFuncReconciler) persistentReconcile(ctx context.Context) {
 // Get the desired FaSTFunc Specification for scaling
 func (r *FaSTFuncReconciler) UpdateFunction(fastfunc *fastfuncv1.FaSTFunc,
 	rps10s, rps30s, rps30s_earlier float64,
+
 	minRps float64,
 ) error {
+	klog.Infof("fastfunc: %s", fastfunc.ObjectMeta.Name)
 	funccc, isOldFunction := fastFuncMap[fastfunc.ObjectMeta.Name]
 	//if the function is not in the map, create a new one
 	if funccc == nil {
@@ -153,6 +155,7 @@ func (r *FaSTFuncReconciler) UpdateFunction(fastfunc *fastfuncv1.FaSTFunc,
 			Name:               fastfunc.ObjectMeta.Name,
 			configUUIDToConfig: make(map[string]*Config),
 		}
+		fastFuncMap[fastfunc.ObjectMeta.Name] = funccc
 	}
 	var totalRPSCap float64
 	if isOldFunction {
@@ -161,7 +164,13 @@ func (r *FaSTFuncReconciler) UpdateFunction(fastfunc *fastfuncv1.FaSTFunc,
 		totalRPSCap = 0
 	}
 
-	deltaReqs := rps10s - totalRPSCap
+	klog.Infof("isOldFunction: %t", isOldFunction)
+
+	klog.Infof("totalRPSCap: %f", totalRPSCap)
+
+	// rps10s = math.Max(rps10s, minRps)
+
+	deltaReqs := math.Max(rps10s, minRps) - totalRPSCap
 
 	scaleUp := deltaReqs >= 0.2*totalRPSCap || !isOldFunction
 
@@ -178,8 +187,8 @@ func (r *FaSTFuncReconciler) UpdateFunction(fastfunc *fastfuncv1.FaSTFunc,
 
 	// KONTON Testing Start
 	if scaleUp {
-		klog.Infof("Scaling up the function %s. Requested RPS = %f, Current RPS = %f, Past RPS = %f, Old RPS = %f.",
-			fastfunc.ObjectMeta.Name, funcRequest.QPS, rps10s, rps30s, rps30s_earlier)
+		klog.Infof("Scaling up the function %s. Requested RPS = %f, Current RPS = %f, Past RPS = %f, Old RPS = %f. minRps = %f",
+			fastfunc.ObjectMeta.Name, funcRequest.QPS, rps10s, rps30s, rps30s_earlier, minRps)
 		configslist, err := r.nodeManager.GetConfigs(funcRequest, !isOldFunction)
 		newConfigList := r.nodeManager.PrepareConfigsRequirements(funcRequest, configslist)
 		if err != nil {

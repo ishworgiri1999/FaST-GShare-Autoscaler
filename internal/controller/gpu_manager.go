@@ -38,6 +38,10 @@ func (g *GPUInfo) AvailableMemory() int64 {
 }
 
 func (g *GPUInfo) AllocateAndCommitConfig(config *Config) (*Config, error) {
+
+	//set gpu allocation type
+	g.allocationType = config.AllocationType
+
 	// Remove memory from usage
 	g.UsageMem -= (config.MemoryReq * int64(config.RequiredReplica))
 

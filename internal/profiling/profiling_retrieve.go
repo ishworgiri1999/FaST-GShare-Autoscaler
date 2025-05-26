@@ -17,7 +17,11 @@ limitations under the License.
 
 package profiling
 
-import "math"
+import (
+	"math"
+
+	"k8s.io/klog/v2"
+)
 
 var profileData map[ProfileKey]float64 = map[ProfileKey]float64{
 	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 100, Quota: 0.2}: 67.38591699444268,
@@ -131,10 +135,12 @@ func (s *RPSStore) PredictQPS(modelName, gpuType string, smPercentage int, quota
 	}
 
 	if modelName == "resnet" && gpuType == "NVIDIA A100-PCIE-40GB" {
-		return math.Min(67.38591699444268*float64(smPercentage/100)*quota, 20)
+		qps := 67.38591699444268 * (float64(smPercentage) / 100) * quota
+		klog.Infof("qps: %f", qps)
+		return math.Min(qps, 20)
 	}
 	if modelName == "resnet" && gpuType == "NVIDIA T1000" {
-		return math.Min(60.76065544626069*float64(smPercentage/100)*quota, 20)
+		return math.Min(60.76065544626069*(float64(smPercentage)/100)*quota, 20)
 	}
 
 	// 2. Gather all points for this model/gpu
