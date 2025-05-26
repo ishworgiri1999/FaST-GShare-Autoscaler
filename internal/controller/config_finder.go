@@ -48,7 +48,8 @@ func (c *Config) Equal(other *Config) bool {
 }
 
 func (ctr *NodeManager) GetConfigs(req *ResourceRequest, initial bool) ([]*Config, error) {
-
+	ctr.nodesMtx.Lock()
+	defer ctr.nodesMtx.Unlock()
 	//get required memory
 	requiredMemory, err := GetModelMemory(req.ModelName)
 	if err != nil {

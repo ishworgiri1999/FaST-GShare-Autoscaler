@@ -44,6 +44,8 @@ type FastFunc struct {
 	currentRPSCapacity float64 //current rps of the function based on the current configs
 }
 
+var failedReleasesGPUs = make(map[string]*GPUInfo)
+
 func (f *FastFunc) CurrentConfigs() []*Config {
 	configs := make([]*Config, 0)
 	for _, config := range f.configUUIDToConfig {
@@ -230,13 +232,15 @@ func (r *FaSTFuncReconciler) destroyGPU(gpu *GPUInfo) {
 				Uuid: gpu.UUID,
 			})
 
+			if err != nil {
+				klog.Errorf("Error Failed to release the virtual GPU %s.", gpu.UUID)
+				return
+			}
+
 			node.availableGPUs = append(node.availableGPUs, resp.AvailableVirtualGpus...)
 
 			delete(node.physicalGPUsMap, gpu.UUID)
 
-			if err != nil {
-				klog.Errorf("Error Failed to release the virtual GPU %s.", gpu.UUID)
-			}
 		}
 	}
 

@@ -75,11 +75,7 @@ var once sync.Once
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the FaSTFunc object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
+
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.19.0/pkg/reconcile
 func (r *FaSTFuncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -88,6 +84,20 @@ func (r *FaSTFuncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	once.Do(func() {
 		go r.persistentReconcile(ctx)
 	})
+
+	fastFuncForDelete := &fastfuncv1.FaSTFunc{}
+
+	if err := r.Get(ctx, req.NamespacedName, fastFuncForDelete); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Check if the object is being deleted
+	if fastFuncForDelete.ObjectMeta.DeletionTimestamp != nil {
+		// The FaSTFunc is being deleted
+		//purge all the configs and GPUs
+
+		// Add your deletion/cleanup logic here
+	}
 
 	return ctrl.Result{}, nil
 }
