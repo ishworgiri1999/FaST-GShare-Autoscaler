@@ -4,6 +4,7 @@ package shelf
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 )
 
@@ -96,10 +97,12 @@ func (sp *ShelfPacker) CanFit(width float64, height int) (bool, error) {
 		}
 	}
 	remaining := sp.MaxHeight - sp.UsedHeight
-	if height > remaining {
-		return false, errors.New("no space for new shelf: height exceeds remaining bin height")
+
+	if height <= remaining {
+		return true, nil
 	}
-	return false, nil
+
+	return false, fmt.Errorf("no space for new shelf: height exceeds remaining bin height :remaining %d, height %d", remaining, height)
 }
 
 // Remove deletes the item with the given ID, automatically collapsing empty shelves, and returns its former shelf index.

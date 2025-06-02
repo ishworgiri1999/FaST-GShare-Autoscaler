@@ -148,9 +148,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	//set the log
+	log := ctrl.Log.WithName("fastfunc-controller")
+
 	if err = (&controller.FaSTFuncReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		Log:    &log,
 	}).SetupWithManager(mgr, initConfig); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "FaSTFunc")
 		os.Exit(1)

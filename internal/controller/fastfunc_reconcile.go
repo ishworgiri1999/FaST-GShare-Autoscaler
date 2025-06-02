@@ -26,15 +26,12 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 
 	fastfuncv1 "fastgshare/fastfunc/api/v1"
 
 	fastpodv1 "github.com/KontonGu/FaST-GShare/pkg/apis/fastgshare.caps.in.tum/v1"
-	"github.com/KontonGu/FaST-GShare/pkg/proto/seti/v1"
-	fasttypes "github.com/KontonGu/FaST-GShare/pkg/types"
 	"github.com/prometheus/common/model"
 )
 
@@ -42,9 +39,17 @@ type FastFunc struct {
 	Name               string
 	configUUIDToConfig map[string]*Config
 	currentRPSCapacity float64 //current rps of the function based on the current configs
+
 }
 
-var failedReleasesGPUs = make(map[string]*GPUInfo)
+func (f *FastFunc) GetConfigForFastPod(fastPod *fastpodv1.FaSTPod) *Config {
+	configUUID := fastPod.ObjectMeta.Annotations["config_uuid"]
+	config, ok := f.configUUIDToConfig[configUUID]
+	if !ok {
+		return nil
+	}
+	return config
+}
 
 func (f *FastFunc) CurrentConfigs() []*Config {
 	configs := make([]*Config, 0)
@@ -58,31 +63,38 @@ var fastFuncMap = make(map[string]*FastFunc)
 
 func (r *FaSTFuncReconciler) persistentReconcile(ctx context.Context) {
 	ticker := time.NewTicker(10 * time.Second)
+
 	defer ticker.Stop()
 	for range ticker.C {
 
-		nodeList, err := r.nodesLister.List(labels.Set{"gpu": "present"}.AsSelector())
-		if err != nil {
-			klog.Errorf("error Cannot find gpu node with the lable \"gpu:present\"")
-			continue
-		}
-		for _, node := range nodeList {
-			klog.Infof("Node: %s", node.Name)
-		}
-
-		var allFaSTfuncs fastfuncv1.FaSTFuncList
-		if err := r.List(ctx, &allFaSTfuncs); err != nil {
+		var fastFuncList fastfuncv1.FaSTFuncList
+		if err := r.List(ctx, &fastFuncList); err != nil {
 			klog.Error(err, "Failed to get FaSTFuncs.")
 			continue
 		}
 
+		//log if empty
+		if len(fastFuncList.Items) == 0 {
+			klog.Infof("No FaSTFuncs found. Reconcile done.")
+			continue
+		}
+
 		// reconcile for each FaSTFunc
-		for _, fstfunc := range allFaSTfuncs.Items {
+		for _, fstfunc := range fastFuncList.Items {
 			rps := fstfunc.Spec.MinQps
+			if fstfunc.ObjectMeta.Annotations != nil && fstfunc.ObjectMeta.Annotations["qps-to-maintain"] != "" {
+				var err error
+				rps, err = strconv.Atoi(fstfunc.ObjectMeta.Annotations["qps-to-maintain"])
+				if err != nil {
+					klog.Errorf("Error Failed to get qps-to-maintain for function %s.", fstfunc.ObjectMeta.Name)
+					continue
+				}
+				rps = int(rps)
+			}
 
-			klog.Infof("FaSTFunc %s has minQps = %d.", fstfunc.ObjectMeta.Name, rps)
+			klog.Infof("FaSTFunc %s has qps to maintain = %d, minQps = %d.", fstfunc.ObjectMeta.Name, rps, fstfunc.Spec.MinQps)
 
-			funcName := fstfunc.ObjectMeta.Name
+			funcName := fstfunc.Name
 			klog.Infof("Checking FaSTFunc %s.", funcName)
 
 			// make a Prometheus query to get the RPS of the function
@@ -141,127 +153,16 @@ func (r *FaSTFuncReconciler) persistentReconcile(ctx context.Context) {
 	}
 }
 
-// Get the desired FaSTFunc Specification for scaling
-func (r *FaSTFuncReconciler) UpdateFunction(fastfunc *fastfuncv1.FaSTFunc,
-	rps10s, rps30s, rps30s_earlier float64,
+func (r *FaSTFuncReconciler) scheduleForDeletion(gpu *GPUInfo) {
 
-	minRps float64,
-) error {
-	klog.Infof("fastfunc: %s", fastfunc.ObjectMeta.Name)
-	funccc, isOldFunction := fastFuncMap[fastfunc.ObjectMeta.Name]
-	//if the function is not in the map, create a new one
-	if funccc == nil {
-		funccc = &FastFunc{
-			Name:               fastfunc.ObjectMeta.Name,
-			configUUIDToConfig: make(map[string]*Config),
-		}
-		fastFuncMap[fastfunc.ObjectMeta.Name] = funccc
-	}
-	var totalRPSCap float64
-	if isOldFunction {
-		totalRPSCap = funccc.currentRPSCapacity
-	} else {
-		totalRPSCap = 0
-	}
-
-	klog.Infof("isOldFunction: %t", isOldFunction)
-
-	klog.Infof("totalRPSCap: %f", totalRPSCap)
-
-	// rps10s = math.Max(rps10s, minRps)
-
-	deltaReqs := math.Max(rps10s, minRps) - totalRPSCap
-
-	scaleUp := deltaReqs >= 0.2*totalRPSCap || !isOldFunction
-
-	scaleDown := deltaReqs < 0 && -deltaReqs > 0.2*totalRPSCap
-
-	// rps difference
-	klog.Infof("RPS difference (DeltaRPS) = %f.", deltaReqs)
-
-	funcRequest := &ResourceRequest{
-		ModelName:      fastfunc.Spec.ModelName,
-		QPS:            float64(deltaReqs), //just for testing
-		AllocationType: fasttypes.GetAllocationType(fastfunc.Spec.AllocationType),
-	}
-
-	// KONTON Testing Start
-	if scaleUp {
-		klog.Infof("Scaling up the function %s. Requested RPS = %f, Current RPS = %f, Past RPS = %f, Old RPS = %f. minRps = %f",
-			fastfunc.ObjectMeta.Name, funcRequest.QPS, rps10s, rps30s, rps30s_earlier, minRps)
-		configslist, err := r.nodeManager.GetConfigs(funcRequest, !isOldFunction)
-		newConfigList := r.nodeManager.PrepareConfigsRequirements(funcRequest, configslist)
-		if err != nil {
-			// TODO: handle this error
-			klog.Errorf("Error: %v", err)
-			klog.Errorf("Error Failed to get configs for function %s.", fastfunc.ObjectMeta.Name)
-			return nil
-		}
-
-		fastpods, _ := r.ConvertConfigs2FaSTPods(fastfunc, newConfigList)
-
-		err = r.ReconcileFaSTPod(fastpods)
-		if err != nil {
-			klog.Errorf("Error Failed to reconcile the desired FaSTPods for function %s.", fastfunc.ObjectMeta.Name)
-			return err
-		}
-		//add configs
-		for _, config := range newConfigList {
-			funccc.configUUIDToConfig[config.UUID] = config
-			funccc.currentRPSCapacity += config.AllocatedRPS
-		}
-
-	} else if scaleDown {
-		// scaling down
-		klog.Infof("Scaling down the function %s. Requested RPS = %f, Current RPS = %f, Past RPS = %f, Old RPS = %f.",
-			fastfunc.ObjectMeta.Name, funcRequest.QPS, rps10s, rps30s, rps30s_earlier)
-		// deltaReqs = deltaReqs * (-1)
-		configsUpdated, configsRemoved := r.scaleDownFaSTFunc(funccc, rps10s)
-		for _, config := range configsUpdated {
-			funccc.currentRPSCapacity -= config.ReducedDelta
-			//update config in gpu
-			isEmpty := config.Config.associatedGpu.ReduceConfig(config.Config, config.NewReplica)
-			if isEmpty {
-				r.destroyGPU(config.Config.associatedGpu)
-			}
-			funccc.configUUIDToConfig[config.Config.UUID] = config.Config
-		}
-		for _, config := range configsRemoved {
-			funccc.currentRPSCapacity -= config.AllocatedRPS
-			//remove config from gpu first
-			isEmpty := config.associatedGpu.DeallocateConfig(config)
-			if isEmpty {
-				r.destroyGPU(config.associatedGpu)
-			}
-			delete(funccc.configUUIDToConfig, config.UUID)
-		}
-	}
-
-	return nil
-}
-
-func (r *FaSTFuncReconciler) destroyGPU(gpu *GPUInfo) {
-
-	if gpu.Usage.IsEmpty() && gpu.virtual {
-		node := r.nodeManager.nodes[gpu.NodeName]
-		node.lock.Lock()
-		defer node.lock.Unlock()
-		if node != nil {
-			resp, err := node.GrpcClient.ReleaseVirtualGPU(context.TODO(), &seti.ReleaseVirtualGPURequest{
-				Uuid: gpu.UUID,
-			})
-
-			if err != nil {
-				klog.Errorf("Error Failed to release the virtual GPU %s.", gpu.UUID)
-				return
-			}
-
-			node.availableGPUs = append(node.availableGPUs, resp.AvailableVirtualGpus...)
-
-			delete(node.physicalGPUsMap, gpu.UUID)
-
-		}
-	}
+	time.AfterFunc(10*time.Second, func() {
+		r.gpuReleaseQueue.Add(GPUReleaseWorkItem{
+			GPUUUID:    gpu.UUID,
+			NodeName:   gpu.NodeName,
+			RetryCount: 0,
+			Timestamp:  time.Now(),
+		})
+	})
 
 }
 

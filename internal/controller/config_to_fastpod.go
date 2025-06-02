@@ -46,7 +46,7 @@ func (r *FaSTFuncReconciler) ConvertConfigs2FaSTPods(fastfunc *fastfuncv1.FaSTFu
 		extendedAnnotations[fastpodv1.FaSTGShareNodeName] = config.NodeName
 		extendedAnnotations[fastpodv1.FaSTGShareVGPUID] = config.VGPUUUID
 		extendedAnnotations[fastpodv1.FastGshareAllocationType] = string(config.AllocationType)
-		extendedAnnotations["config_UUID"] = config.UUID
+		extendedAnnotations["config_uuid"] = config.UUID
 		extendedAnnotations["rps"] = fmt.Sprintf("%0.2f", config.AllocatedRPS)
 		fixedReplica_int32 := int32(config.AllocatedReplica)
 		fastpod := &fastpodv1.FaSTPod{

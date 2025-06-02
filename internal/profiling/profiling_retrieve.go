@@ -18,83 +18,14 @@ limitations under the License.
 package profiling
 
 import (
-	"math"
+	"encoding/csv"
+	"log"
+	"os"
+	"path/filepath"
+	"strconv"
 
-	"k8s.io/klog/v2"
+	"k8s.io/klog"
 )
-
-var profileData map[ProfileKey]float64 = map[ProfileKey]float64{
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 100, Quota: 0.2}: 67.38591699444268,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 12, Quota: 0.2}:  67.38487886874576,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 24, Quota: 0.2}:  72.03457000513981,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 50, Quota: 0.2}:  69.11592316066034,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 6, Quota: 0.2}:   73.24971794613924,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 100, Quota: 0.2}:          67.76065544626069,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 60, Quota: 0.2}:  66.72138622165636,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 12, Quota: 0.2}:           67.50001862549811,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 80, Quota: 0.2}:  67.35384365392547,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 24, Quota: 0.2}:           69.6112123553603,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 100, Quota: 0.4}: 67.38608796400355,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 50, Quota: 0.2}:           68.01659107474543,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 12, Quota: 0.4}:  67.34010036564189,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 6, Quota: 0.2}:            68.09546311452709,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 24, Quota: 0.4}:  66.85794466573061,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 60, Quota: 0.2}:           70.84254072807164,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 50, Quota: 0.4}:  68.1197149113869,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 80, Quota: 0.2}:           68.44265851128335,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 6, Quota: 0.4}:   66.25068996181766,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 100, Quota: 0.4}:          67.24470684684101,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 60, Quota: 0.4}:  67.80882900078336,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 12, Quota: 0.4}:           68.90021950065555,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 80, Quota: 0.4}:  71.69473080833326,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 24, Quota: 0.4}:           69.72009380917116,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 100, Quota: 0.6}: 66.5190315698684,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 50, Quota: 0.4}:           67.4607461917182,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 12, Quota: 0.6}:  66.07943872242501,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 6, Quota: 0.4}:            66.61789253506679,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 24, Quota: 0.6}:  72.158986355285,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 60, Quota: 0.4}:           66.56439540615396,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 50, Quota: 0.6}:  67.26736352611034,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 80, Quota: 0.4}:           70.63607605734065,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 6, Quota: 0.6}:   67.83827177076708,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 100, Quota: 0.6}:          69.49901569244965,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 60, Quota: 0.6}:  68.56499798022966,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 12, Quota: 0.6}:           68.42946426956286,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 80, Quota: 0.6}:  67.72729871287433,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 24, Quota: 0.6}:           67.65987426066009,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 100, Quota: 0.8}: 67.38872527064373,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 50, Quota: 0.6}:           72.96325410136883,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 12, Quota: 0.8}:  68.06604507667126,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 6, Quota: 0.6}:            68.73210546362036,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 24, Quota: 0.8}:  68.7114908116919,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 60, Quota: 0.6}:           67.37720718301493,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 50, Quota: 0.8}:  67.43109561866876,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 80, Quota: 0.6}:           67.45811076126535,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 6, Quota: 0.8}:   68.80460234205607,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 100, Quota: 0.8}:          67.53351635240932,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 60, Quota: 0.8}:  71.84317072217841,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 12, Quota: 0.8}:           67.89364895584849,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 80, Quota: 0.8}:  67.67895786863248,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 24, Quota: 0.8}:           69.24518936451162,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 100, Quota: 1.0}: 69.62947806355189,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 50, Quota: 0.8}:           71.69248531765297,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 12, Quota: 1.0}:  67.31040838218475,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 6, Quota: 0.8}:            67.2648292512718,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 24, Quota: 1.0}:  66.42285647817423,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 60, Quota: 0.8}:           69.45926789528505,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 50, Quota: 1.0}:  69.86248778687866,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 80, Quota: 0.8}:           69.18287726299101,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 6, Quota: 1.0}:   67.29281700577022,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 100, Quota: 1.0}:          69.79367631564119,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 60, Quota: 1.0}:  66.36682183439518,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 12, Quota: 1.0}:           72.28704781807691,
-	{ModelName: "resnet", GPUType: "NVIDIA A100-PCIE-40GB", SMPercentage: 80, Quota: 1.0}:  63.89443081068653,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 24, Quota: 1.0}:           67.56764920564156,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 50, Quota: 1.0}:           73.22939644730232,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 6, Quota: 1.0}:            68.21535183156237,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 60, Quota: 1.0}:           69.59549792920951,
-	{ModelName: "resnet", GPUType: "NVIDIA T1000", SMPercentage: 80, Quota: 1.0}:           67.87592090555836,
-}
 
 type ProfileKey struct {
 	ModelName    string
@@ -107,111 +38,112 @@ type RPSStore struct {
 	data map[ProfileKey]float64 // or int if QPS is always an integer
 }
 
-func NewRPSStore(data map[ProfileKey]float64) *RPSStore {
-	return &RPSStore{
-		data: data,
+func NewRPSStore() *RPSStore {
+	//read from file system
+	rpsStore := &RPSStore{
+		data: make(map[ProfileKey]float64),
 	}
+
+	// List of CSV files to read
+	csvFiles := []string{"profiling/a100.csv", "profiling/t1000.csv"} // Add more files as needed
+	for _, csvFile := range csvFiles {
+		f, err := os.Open(filepath.Clean(csvFile))
+		//panif if fails
+		if err != nil {
+			log.Fatalf("Failed to open %s: %v", csvFile, err)
+		}
+		defer f.Close()
+		reader := csv.NewReader(f)
+		records, err := reader.ReadAll()
+		if err != nil {
+			log.Printf("Failed to read %s: %v", csvFile, err)
+			continue
+		}
+		for i, rec := range records {
+			if i == 0 {
+				continue // skip header
+			}
+			if len(rec) < 5 {
+				continue
+			}
+			gpuType := rec[0]
+			modelName := rec[1]
+			quota, err1 := strconv.ParseFloat(rec[2], 64)
+			sm, err2 := strconv.Atoi(rec[3])
+			qps, err3 := strconv.ParseFloat(rec[4], 64)
+			if err1 != nil || err2 != nil || err3 != nil {
+				continue
+			}
+			key := ProfileKey{modelName, gpuType, sm, quota}
+			if qps <= 0 {
+				continue
+			}
+			// Only set if new QPS is greater than existing
+			if existing, ok := rpsStore.data[key]; !ok || qps > existing {
+				rpsStore.data[key] = qps
+			}
+		}
+	}
+	klog.Infof("Initialized RPSStore with %d entries", len(rpsStore.data))
+	// get one sample
+	for key, qps := range rpsStore.data {
+		klog.Infof("Sample: %v, QPS: %f", key, qps)
+		break
+	}
+	return rpsStore
 }
 
-var RpsStore = NewRPSStore(profileData)
+var RpsStore = NewRPSStore()
 
 func (s *RPSStore) Set(modelName, gpuType string, smPercentage int, quota float64, qps float64) {
-
+	if qps <= 0 {
+		return
+	}
 	key := ProfileKey{modelName, gpuType, smPercentage, quota}
 	s.data[key] = qps
 }
 
-func (s *RPSStore) Get(modelName, gpuType string, smPercentage int, quota float64) (float64, bool) {
-	key := ProfileKey{modelName, gpuType, smPercentage, quota}
+func (s *RPSStore) Get(modelName, gpuTypeShortName string, smPercentage int, quota float64) (float64, bool) {
+	key := ProfileKey{modelName, gpuTypeShortName, smPercentage, quota}
 	qps, exists := s.data[key]
-	return qps, exists
+	if !exists || qps <= 0 {
+		return 0, false
+	}
+	return qps, true
 }
 
 // PredictQPS estimates the QPS for the given parameters using bilinear interpolation or nearest neighbor fallback.
-func (s *RPSStore) PredictQPS(modelName, gpuType string, smPercentage int, quota float64) float64 {
+func (s *RPSStore) PredictQPS(modelName, gpuType string, smPercentage int, quota float64, roundBy int) float64 {
 	// 1. Check for exact match
 	if qps, exists := s.Get(modelName, gpuType, smPercentage, quota); exists {
 		return qps
 	}
 
-	if modelName == "resnet" && gpuType == "NVIDIA A100-PCIE-40GB" {
-		qps := 67.38591699444268 * (float64(smPercentage) / 100) * quota
-		klog.Infof("qps: %f", qps)
-		return math.Min(qps, 20)
-	}
-	if modelName == "resnet" && gpuType == "NVIDIA T1000" {
-		return math.Min(60.76065544626069*(float64(smPercentage)/100)*quota, 20)
-	}
+	if roundBy != 0 {
+		// Find the two nearest multiples of roundBy that bracket smPercentage
+		lower := (smPercentage / roundBy) * roundBy
+		upper := lower
+		if smPercentage%roundBy != 0 {
+			upper = lower + roundBy
+		}
 
-	// 2. Gather all points for this model/gpu
-	type point struct {
-		sm  int
-		q   float64
-		val float64
-	}
-	var points []point
-	for k, v := range s.data {
-		if k.ModelName == modelName && k.GPUType == gpuType {
-			points = append(points, point{k.SMPercentage, k.Quota, v})
-		}
-	}
-	if len(points) == 0 {
-		return 0 // or some default/fallback
-	}
+		var (
+			qpsLower, foundLower = s.Get(modelName, gpuType, lower, quota)
+			qpsUpper, foundUpper = s.Get(modelName, gpuType, upper, quota)
+		)
 
-	// 3. Find the four surrounding points for bilinear interpolation
-	var (
-		smLow, smHigh       = -1, -1
-		quotaLow, quotaHigh = -1.0, -1.0
-	)
-	for _, p := range points {
-		if p.sm <= smPercentage && (smLow == -1 || p.sm > smLow) {
-			smLow = p.sm
-		}
-		if p.sm >= smPercentage && (smHigh == -1 || p.sm < smHigh || smHigh == -1) {
-			smHigh = p.sm
-		}
-		if p.q <= quota && (quotaLow == -1.0 || p.q > quotaLow) {
-			quotaLow = p.q
-		}
-		if p.q >= quota && (quotaHigh == -1.0 || p.q < quotaHigh || quotaHigh == -1.0) {
-			quotaHigh = p.q
+		validLower := foundLower && qpsLower > 0
+		validUpper := foundUpper && qpsUpper > 0
+
+		if validLower && validUpper {
+			return (qpsLower + qpsUpper) / 2.0
+		} else if validLower {
+			return qpsLower
+		} else if validUpper {
+			return qpsUpper
 		}
 	}
 
-	// 4. Try bilinear interpolation if all four corners exist
-	get := func(sm int, q float64) (float64, bool) {
-		for _, p := range points {
-			if p.sm == sm && p.q == q {
-				return p.val, true
-			}
-		}
-		return 0, false
-	}
-	if smLow != -1 && smHigh != -1 && quotaLow != -1.0 && quotaHigh != -1.0 {
-		q11, ok11 := get(smLow, quotaLow)
-		q12, ok12 := get(smLow, quotaHigh)
-		q21, ok21 := get(smHigh, quotaLow)
-		q22, ok22 := get(smHigh, quotaHigh)
-		if ok11 && ok12 && ok21 && ok22 && smHigh != smLow && quotaHigh != quotaLow {
-			// Bilinear interpolation
-			f1 := float64(smHigh-smPercentage) / float64(smHigh-smLow)
-			f2 := float64(smPercentage-smLow) / float64(smHigh-smLow)
-			qpsLow := q11*(quotaHigh-quota)/(quotaHigh-quotaLow) + q12*(quota-quotaLow)/(quotaHigh-quotaLow)
-			qpsHigh := q21*(quotaHigh-quota)/(quotaHigh-quotaLow) + q22*(quota-quotaLow)/(quotaHigh-quotaLow)
-			return qpsLow*f1 + qpsHigh*f2
-		}
-	}
-
-	// 5. Fallback: nearest neighbor
-	minDist := -1.0
-	var bestQPS float64
-	for _, p := range points {
-		d := (float64(p.sm-smPercentage))*(float64(p.sm-smPercentage)) + (p.q-quota)*(p.q-quota)
-		if minDist == -1.0 || d < minDist {
-			minDist = d
-			bestQPS = p.val
-		}
-	}
-	return bestQPS
+	// Fallback: return 0 if nothing found
+	return 0
 }

@@ -41,6 +41,10 @@ type Config struct {
 	shelfItems       map[int]bool
 }
 
+func (c *Config) String() string {
+	return fmt.Sprintf("Config: %v, UUID: %s, QuotaReq: %f, QuotaLimit: %f, MemoryReq: %d, SMPartition: %d, NodeName: %s, VGPUUUID: %s, associatedGpu: %v, RequiredReplica: %d, SatisfiableRPS: %f, QpsPerReplica: %f, Cost: %f, remainingRPS: %f, AllocatedReplica: %d, AllocatedRPS: %f, shelfItems: %v", c.AllocationType, c.UUID, c.QuotaReq, c.QuotaLimit, c.MemoryReq, c.SMPartition, c.NodeName, c.VGPUUUID, c.associatedGpu, c.RequiredReplica, c.SatisfiableRPS, c.QpsPerReplica, c.Cost, c.remainingRPS, c.AllocatedReplica, c.AllocatedRPS, c.shelfItems)
+}
+
 //make config comparable witrh uuid
 
 func (c *Config) Equal(other *Config) bool {
@@ -75,6 +79,7 @@ func (ctr *NodeManager) GetConfigs(req *ResourceRequest, initial bool) ([]*Confi
 
 	gpuInfos = sortGPUInfos(gpuInfos, req, requiredMemory, initial)
 
+	klog.Infof("Found %d GPUs", len(gpuInfos))
 	for _, devInfo := range gpuInfos {
 
 		//check memory fits
@@ -124,6 +129,8 @@ func (ctr *NodeManager) GetConfigs(req *ResourceRequest, initial bool) ([]*Confi
 		if bestConfig != nil {
 			remainingRequiredQPS -= bestConfig.SatisfiableRPS
 			configs = append(configs, bestConfig)
+		} else {
+			klog.Infof("No config found for GPU %s", devInfo.UUID)
 		}
 
 		if remainingRequiredQPS <= 0 {
@@ -132,6 +139,10 @@ func (ctr *NodeManager) GetConfigs(req *ResourceRequest, initial bool) ([]*Confi
 	}
 
 	klog.Infof("Picked %d configs with satisfied QPS %f and missing QPS %f", len(configs), req.QPS-remainingRequiredQPS, remainingRequiredQPS)
+	//log configs
+	for _, config := range configs {
+		klog.Infof("Config: %v", config)
+	}
 
 	if len(configs) == 0 {
 		return nil, fmt.Errorf("no suitable selection found")
@@ -199,7 +210,7 @@ func (ctr *NodeManager) PrepareConfigsRequirements(
 				UUID:                    response.ProvisionedGpu.Uuid,
 				Mem:                     int64(response.ProvisionedGpu.MemoryBytes),
 				TotalSMPercentage:       config.associatedGpu.TotalSMPercentage,
-				SMAllocationGranularity: 10,
+				SMAllocationGranularity: 5,
 				GPUType:                 config.associatedGpu.GPUType,
 				profileID:               config.associatedGpu.profileID,
 				virtual:                 true,
@@ -247,7 +258,7 @@ func getConfigForExclusive(gpu *GPUInfo, modelName string, memory int64) (*Confi
 		}
 
 		//get qps per replica
-		totalQPS := profiling.RpsStore.PredictQPS(modelName, gpu.GPUType, gpu.TotalSMPercentage, 1.0)
+		totalQPS := profiling.RpsStore.PredictQPS(modelName, gpu.GetTypeShortName(), gpu.TotalSMPercentage, 1.0, 0)
 
 		if totalQPS == 0 {
 			return nil, fmt.Errorf("GPU %s: %s does not have qps per replica", gpu.Name, gpu.GPUType)
@@ -282,21 +293,29 @@ func getConfigForExclusive(gpu *GPUInfo, modelName string, memory int64) (*Confi
 func getConfigForFastPod(devInfo *GPUInfo, modelName string, remainingRequiredQPS float64, requiredMemory int64) *Config {
 
 	var bestConfig *Config
-	for sm := 10; sm <= devInfo.TotalSMPercentage; sm += devInfo.SMAllocationGranularity {
+	for sm := 5; sm <= devInfo.TotalSMPercentage; sm += devInfo.SMAllocationGranularity {
 		for quota := 0.2; quota <= 1.0; quota += 0.2 {
 			canFit, err := devInfo.Fits(sm, quota, requiredMemory)
 			if err != nil {
+				klog.Infof("Error checking if gpu %s can fit: %v", devInfo.UUID, err)
 				continue
 			}
 			if !canFit {
+				klog.Infof("GPU %s does not fit memory", devInfo.UUID)
+				//memory required available
+				memoryRequiredAvailable := devInfo.AvailableMemory()
+				klog.Infof("GPU %s has %d memory required, %d memory available", devInfo.UUID, requiredMemory, memoryRequiredAvailable)
+				if memoryRequiredAvailable < requiredMemory {
+					klog.Infof("GPU %s does not have enough memory", devInfo.UUID)
+					continue
+				}
 				continue
 			}
 
-			qpsPerReplica, ok := profiling.RpsStore.Get(modelName, devInfo.GPUType, sm, quota)
+			qpsPerReplica, ok := profiling.RpsStore.Get(modelName, devInfo.GetTypeShortName(), sm, quota)
 			if !ok {
 				continue
 			}
-
 			if qpsPerReplica == 0 {
 				continue
 			}

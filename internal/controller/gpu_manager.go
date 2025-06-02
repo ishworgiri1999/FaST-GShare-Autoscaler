@@ -3,6 +3,7 @@ package controller
 import (
 	"fastgshare/fastfunc/internal/shelf"
 	"fmt"
+	"strings"
 
 	"github.com/KontonGu/FaST-GShare/pkg/types"
 )
@@ -31,6 +32,19 @@ type GPUInfo struct {
 
 	isModelPresent          map[string]bool
 	podConfigToShelfItemsId map[string][]int
+}
+
+func (g *GPUInfo) GetTypeShortName() string {
+
+	if strings.Contains(g.GPUType, "A100") {
+		return "a100"
+	}
+
+	if strings.Contains(g.GPUType, "T1000") {
+		return "t1000"
+	}
+
+	return ""
 }
 
 func (g *GPUInfo) AvailableMemory() int64 {
@@ -109,7 +123,6 @@ func (g *GPUInfo) ReduceConfig(config *Config, newReplicaCount int) bool {
 
 func NewGPUDevInfo(nodeName string, gpuType string, virtual bool, profileID *uint32, uuid string, mem int64, totalSMPercentage int, smAllocationGranularity int) *GPUInfo {
 
-	cost := GetCost(gpuType)
 	gpuDevInfo := &GPUInfo{
 		virtual:                 virtual,
 		profileID:               profileID,
@@ -123,8 +136,8 @@ func NewGPUDevInfo(nodeName string, gpuType string, virtual bool, profileID *uin
 		Usage:                   shelf.NewShelf(totalSMPercentage),
 		// podList:                 list.New(),
 		podConfigToShelfItemsId: make(map[string][]int),
-		costPerSecond:           cost,
 	}
+	gpuDevInfo.costPerSecond = GetCost(gpuDevInfo.GetTypeShortName())
 
 	return gpuDevInfo
 }
@@ -143,8 +156,8 @@ func (g *GPUInfo) Fits(smPercentage int, quota float64, memory int64) (bool, err
 		return false, fmt.Errorf("smPercentage > 100")
 	}
 
-	if memory > g.UsageMem {
-		return false, fmt.Errorf("memory %d is greater than GPU memory %d", memory, g.Mem)
+	if memory > g.AvailableMemory() {
+		return false, fmt.Errorf("memory %d is greater than available GPU memory %d", memory, g.AvailableMemory())
 	}
 
 	if quota > 1 {
@@ -156,19 +169,19 @@ func (g *GPUInfo) Fits(smPercentage int, quota float64, memory int64) (bool, err
 		return false, err
 	}
 	if !canFit {
-		return false, fmt.Errorf("usag heighte %d + smPercentage %d * quota %f > 1", g.Usage.UsedHeight, smPercentage, quota)
+		return false, fmt.Errorf("usag heighte %d: smPercentage %d * quota %f > 1", g.Usage.UsedHeight, smPercentage, quota)
 	}
 
 	return true, nil
 }
 
 var costsPerSecondMap map[string]int = map[string]int{
-	"NVIDIA A100-PCIE-40GB": 400,
-	"NVIDIA T1000":          100,
+	"a100":  400,
+	"t1000": 100,
 }
 
-func GetCost(gpuType string) int {
-	cost, ok := costsPerSecondMap[gpuType]
+func GetCost(shortName string) int {
+	cost, ok := costsPerSecondMap[shortName]
 	if !ok {
 		return 10_000 // High cost for unknown GPU types
 	}

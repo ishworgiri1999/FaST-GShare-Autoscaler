@@ -17,7 +17,7 @@ func TestSampleSprintFunction(t *testing.T) {
 
 func TestQPSStore_SetAndGet(t *testing.T) {
 	// data := profileData
-	store := NewRPSStore(map[ProfileKey]float64{})
+	store := NewRPSStore()
 	modelName := "resnet50"
 	gpuType := "A100"
 	smPercentage := 80
@@ -50,19 +50,18 @@ func TestQPSStore_SetAndGet(t *testing.T) {
 }
 
 func TestQPSStore_PredictQPS(t *testing.T) {
-	data := profileData
-	store := NewRPSStore(data)
+	store := NewRPSStore()
 	modelName := "resnet50"
 	gpuType := "A100"
 	smPercentage := 80
 	quota := 0.5
 
-	predictedQPS := store.PredictQPS(modelName, gpuType, smPercentage, quota)
+	predictedQPS := store.PredictQPS(modelName, gpuType, smPercentage, quota, 0)
 	if predictedQPS != 123.45 {
 		t.Errorf("Expected predicted QPS %v, got %v", 123.45, predictedQPS)
 	}
 
-	predictedQPS = store.PredictQPS("othermodel", gpuType, smPercentage, quota)
+	predictedQPS = store.PredictQPS("othermodel", gpuType, smPercentage, quota, 0)
 	if predictedQPS != 0 {
 		t.Errorf("Expected predicted QPS %v, got %v", 0, predictedQPS)
 	}

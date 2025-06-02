@@ -19,12 +19,15 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -35,6 +38,8 @@ import (
 	fastpodclientset "github.com/KontonGu/FaST-GShare/pkg/client/clientset/versioned"
 	fastpodinformer "github.com/KontonGu/FaST-GShare/pkg/client/informers/externalversions"
 	fastpodlisters "github.com/KontonGu/FaST-GShare/pkg/client/listers/fastgshare.caps.in.tum/v1"
+	"github.com/KontonGu/FaST-GShare/pkg/proto/seti/v1"
+	"github.com/go-logr/logr"
 	"github.com/prometheus/client_golang/api"
 	promv1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	kubeinformers "k8s.io/client-go/informers"
@@ -49,11 +54,28 @@ type InitConfig struct {
 // FaSTFuncReconciler reconciles a FaSTFunc object
 type FaSTFuncReconciler struct {
 	client.Client
-	Scheme        *runtime.Scheme
-	promv1api     promv1.API
-	fastpodLister fastpodlisters.FaSTPodLister
-	nodesLister   corelisters.NodeLister
-	nodeManager   *NodeManager
+	Scheme           *runtime.Scheme
+	promv1api        promv1.API
+	fastpodLister    fastpodlisters.FaSTPodLister
+	nodesLister      corelisters.NodeLister
+	nodeManager      *NodeManager
+	gpuReleaseQueue  workqueue.TypedRateLimitingInterface[GPUReleaseWorkItem]
+	Log              *logr.Logger
+	gpuWorkerStarted bool
+	processingGPUs   map[string]bool
+}
+
+type GPUReleaseWorkItem struct {
+	GPUUUID     string
+	FastFuncRef types.NamespacedName
+	NodeName    string
+	RetryCount  int
+	Timestamp   time.Time
+}
+
+// Key generates a unique key for the work item
+func (item GPUReleaseWorkItem) Key() string {
+	return fmt.Sprintf("%s/%s", item.FastFuncRef.String(), item.GPUUUID)
 }
 
 type FaSTPodConfig struct {
@@ -81,25 +103,123 @@ var once sync.Once
 func (r *FaSTFuncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	_ = log.FromContext(ctx)
 
+	// Initialize workqueue if not done
+	if r.gpuReleaseQueue == nil {
+		r.gpuReleaseQueue = workqueue.NewTypedRateLimitingQueue(
+			workqueue.DefaultTypedControllerRateLimiter[GPUReleaseWorkItem](),
+		)
+		r.processingGPUs = make(map[string]bool)
+	}
+
+	// Start GPU release worker if not started
+	if !r.gpuWorkerStarted {
+		go r.runGPUReleaseWorker()
+		r.gpuWorkerStarted = true
+	}
+
 	once.Do(func() {
 		go r.persistentReconcile(ctx)
 	})
 
-	fastFuncForDelete := &fastfuncv1.FaSTFunc{}
-
-	if err := r.Get(ctx, req.NamespacedName, fastFuncForDelete); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	// Check if the object is being deleted
-	if fastFuncForDelete.ObjectMeta.DeletionTimestamp != nil {
-		// The FaSTFunc is being deleted
-		//purge all the configs and GPUs
-
-		// Add your deletion/cleanup logic here
-	}
-
 	return ctrl.Result{}, nil
+}
+
+// runGPUReleaseWorker processes GPU release tasks sequentially
+func (r *FaSTFuncReconciler) runGPUReleaseWorker() {
+
+	log := r.Log.WithName("gpu-release-worker")
+	log.Info("Starting GPU release worker")
+
+	for func() bool {
+		// Process next item from queue
+		item, shutdown := r.gpuReleaseQueue.Get()
+
+		if shutdown {
+			log.Info("GPU release queue shut down")
+			return false
+		}
+
+		// Process the item
+		err, tryAgain := r.processGPUReleaseItem(item)
+		if err != nil {
+			log.Error(err, "Error processing GPU release item")
+			if tryAgain {
+				if item.RetryCount > 10 {
+					log.Error(fmt.Errorf("failed to release GPU after 3 retries"), "Failed to release GPU", "gpu", item.GPUUUID, "node", item.NodeName)
+					r.gpuReleaseQueue.Done(item)
+					return true
+				}
+				//increment failure count
+				retryCount := item.RetryCount + 1
+
+				//check if the item is already in the queue
+				if _, exists := r.processingGPUs[item.Key()]; !exists {
+					r.gpuReleaseQueue.Add(GPUReleaseWorkItem{
+						GPUUUID:    item.GPUUUID,
+						NodeName:   item.NodeName,
+						RetryCount: retryCount,
+						Timestamp:  time.Now(),
+					})
+				}
+			}
+		}
+
+		// Mark item as done
+		r.gpuReleaseQueue.Done(item)
+		return true
+	}() {
+		//do nothing
+	}
+
+}
+
+func (r *FaSTFuncReconciler) processGPUReleaseItem(item interface{}) (error, bool) {
+	log := r.Log.WithName("gpu-release-processor")
+
+	workItem, ok := item.(GPUReleaseWorkItem)
+	if !ok {
+		log.Error(fmt.Errorf("invalid work item type"), "Expected GPUReleaseWorkItem")
+		return fmt.Errorf("invalid work item type"), false
+	}
+
+	key := workItem.Key()
+
+	// Mark as processing
+	r.processingGPUs[key] = true
+	defer func() {
+		delete(r.processingGPUs, key)
+	}()
+
+	log.Info("Processing GPU release",
+		"gpu", workItem.GPUUUID,
+		"fastfunc", workItem.FastFuncRef,
+		"retries", workItem.RetryCount)
+
+	// lock node
+	node, ok := r.nodeManager.nodes[workItem.NodeName]
+	if !ok {
+		log.Error(fmt.Errorf("node not found"), "Node not found", "node", workItem.NodeName)
+		return fmt.Errorf("node not found"), false
+	}
+	node.lock.Lock()
+	defer node.lock.Unlock()
+
+	if node != nil {
+		resp, err := node.GrpcClient.ReleaseVirtualGPU(context.TODO(), &seti.ReleaseVirtualGPURequest{
+			Uuid: workItem.GPUUUID,
+		})
+
+		if err != nil {
+			return fmt.Errorf("error releasing virtual GPU"), true
+		}
+
+		node.availableGPUs = append(node.availableGPUs, resp.AvailableVirtualGpus...)
+
+		delete(node.physicalGPUsMap, workItem.GPUUUID)
+
+	}
+
+	return nil, false
 }
 
 // Initialize the FaSTPod Lister
