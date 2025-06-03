@@ -42,6 +42,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/prometheus/client_golang/api"
 	promv1 "github.com/prometheus/client_golang/api/prometheus/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	kubeinformers "k8s.io/client-go/informers"
 	corelisters "k8s.io/client-go/listers/core/v1"
 )
@@ -101,7 +102,21 @@ var once sync.Once
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.19.0/pkg/reconcile
 func (r *FaSTFuncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
+	log := log.FromContext(ctx)
+
+	// Try to get the FaSTFunc
+	var fastFunc fastfuncv1.FaSTFunc
+	err := r.Get(ctx, req.NamespacedName, &fastFunc)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			// FaSTFunc was deleted, perform cleanup
+			log.Info("FaSTFunc deleted, performing cleanup", "name", req.NamespacedName)
+			r.handleDeletedFaSTFunc(req.NamespacedName)
+			return ctrl.Result{}, nil
+		}
+		// Other error
+		return ctrl.Result{}, err
+	}
 
 	// Initialize workqueue if not done
 	if r.gpuReleaseQueue == nil {
@@ -283,4 +298,25 @@ func (r *FaSTFuncReconciler) SetupWithManager(mgr ctrl.Manager, initConfig InitC
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&fastfuncv1.FaSTFunc{}).
 		Complete(r)
+}
+
+func (r *FaSTFuncReconciler) handleDeletedFaSTFunc(name types.NamespacedName) {
+	//removing the fastfunc from the fastfunc map
+	//get fastfunc name from fastfunc map
+	fastfunc, ok := fastFuncMap[name.Name]
+	if !ok {
+		return
+	}
+
+	//release all GPUs
+	for _, config := range fastfunc.CurrentConfigs() {
+		isEmpty := config.associatedGpu.ReduceConfig(config, 0)
+		if isEmpty && config.associatedGpu.virtual {
+			//release the GPU
+			r.scheduleForDeletion(config.associatedGpu)
+		}
+	}
+
+	//remove from fastfunc map
+	delete(fastFuncMap, name.Name)
 }
