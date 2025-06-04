@@ -3,6 +3,7 @@ package controller
 import (
 	"bufio"
 	"context"
+	"fastgshare/fastfunc/internal/profiling"
 	"fmt"
 	"net"
 	"strings"
@@ -42,11 +43,12 @@ type Node struct {
 type NodeManager struct {
 	nodes          map[string]*Node
 	nodesMtx       sync.Mutex
+	qpsStore       *profiling.QPSStore
 	checkTickerItv int
 }
 
 // NewNodeManager creates a new NodeManager.
-func NewNodeManager(checkInterval int) *NodeManager {
+func NewNodeManager(checkInterval int, qpsStore *profiling.QPSStore) *NodeManager {
 
 	interval := time.Duration(checkInterval) * time.Second
 	if interval < 10*time.Second {
@@ -55,6 +57,7 @@ func NewNodeManager(checkInterval int) *NodeManager {
 	return &NodeManager{
 		nodes:          make(map[string]*Node),
 		checkTickerItv: int(interval.Seconds()),
+		qpsStore:       qpsStore,
 	}
 }
 

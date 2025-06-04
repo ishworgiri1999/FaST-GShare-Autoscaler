@@ -2,11 +2,11 @@ package controller
 
 import (
 	"context"
-	"fastgshare/fastfunc/internal/profiling"
 	"fastgshare/fastfunc/internal/shelf"
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 
 	"github.com/KontonGu/FaST-GShare/pkg/proto/seti/v1"
 	"github.com/KontonGu/FaST-GShare/pkg/types"
@@ -18,6 +18,7 @@ type ResourceRequest struct {
 	ModelName      string
 	QPS            float64
 	AllocationType types.AllocationType
+	PreferredGPU   string
 }
 
 type Config struct {
@@ -77,6 +78,18 @@ func (ctr *NodeManager) GetConfigs(req *ResourceRequest, initial bool) ([]*Confi
 		gpuInfos = append(gpuInfos, extractGPUSFromNode(node)...)
 	}
 
+	//if preferred gpu is set, filter out the gpus that are not the preferred gpu
+	if req.PreferredGPU != "" {
+		preferredGPUs := []*GPUInfo{}
+		for _, gpu := range gpuInfos {
+			//gpu type contains the gpu type name
+			if strings.Contains(gpu.GPUType, req.PreferredGPU) {
+				preferredGPUs = append(preferredGPUs, gpu)
+			}
+		}
+		gpuInfos = preferredGPUs
+	}
+
 	gpuInfos = sortGPUInfos(gpuInfos, req, requiredMemory, initial)
 
 	klog.Infof("Found %d GPUs", len(gpuInfos))
@@ -93,13 +106,12 @@ func (ctr *NodeManager) GetConfigs(req *ResourceRequest, initial bool) ([]*Confi
 		if req.AllocationType == types.AllocationTypeExclusive {
 			//check if gpu is virtual  and add to config
 			if devInfo.virtual {
-				config, err := getConfigForExclusive(devInfo, req.ModelName, requiredMemory)
+				config, err := ctr.getConfigForExclusive(devInfo, req.ModelName, requiredMemory)
 				if err != nil {
 					klog.Infof("GPU %s does not have config: error %v", devInfo.UUID, err)
 					continue
 				}
 
-				klog.Infof("GPU %s has config", devInfo.UUID)
 				configs = append(configs, config)
 				remainingRequiredQPS -= config.SatisfiableRPS
 				//if remainingRequiredQPS is negative, it means we have enough qps support so we can break
@@ -107,7 +119,6 @@ func (ctr *NodeManager) GetConfigs(req *ResourceRequest, initial bool) ([]*Confi
 					break
 				}
 
-				klog.Infof("Config: %v", config)
 				if config != nil {
 					configs = append(configs, config)
 				}
@@ -122,9 +133,7 @@ func (ctr *NodeManager) GetConfigs(req *ResourceRequest, initial bool) ([]*Confi
 			continue
 		}
 
-		bestConfig := getConfigForFastPod(devInfo, req.ModelName, remainingRequiredQPS, requiredMemory)
-
-		//config from this gpu.
+		bestConfig := ctr.getConfigForFastPod(devInfo, req.ModelName, remainingRequiredQPS, requiredMemory)
 
 		if bestConfig != nil {
 			remainingRequiredQPS -= bestConfig.SatisfiableRPS
@@ -138,16 +147,11 @@ func (ctr *NodeManager) GetConfigs(req *ResourceRequest, initial bool) ([]*Confi
 		}
 	}
 
-	klog.Infof("Picked %d configs with satisfied QPS %f and missing QPS %f", len(configs), req.QPS-remainingRequiredQPS, remainingRequiredQPS)
-	//log configs
-	for _, config := range configs {
-		klog.Infof("Config: %v", config)
-	}
-
 	if len(configs) == 0 {
 		return nil, fmt.Errorf("no suitable selection found")
+	} else {
+		klog.Infof("Picked %d configs with satisfied QPS %f and missing QPS %f", len(configs), req.QPS-remainingRequiredQPS, remainingRequiredQPS)
 	}
-
 	return configs, nil
 }
 
@@ -247,7 +251,7 @@ func (ctr *NodeManager) PrepareConfigsRequirements(
 	return newConfigs
 }
 
-func getConfigForExclusive(gpu *GPUInfo, modelName string, memory int64) (*Config, error) {
+func (ctr *NodeManager) getConfigForExclusive(gpu *GPUInfo, modelName string, memory int64) (*Config, error) {
 	//for exclusive, no need to consider sm and quota
 
 	//check if gpu is virtual
@@ -258,7 +262,7 @@ func getConfigForExclusive(gpu *GPUInfo, modelName string, memory int64) (*Confi
 		}
 
 		//get qps per replica
-		totalQPS := profiling.RpsStore.PredictQPS(modelName, gpu.GetTypeShortName(), gpu.TotalSMPercentage, 1.0, 0)
+		totalQPS := ctr.qpsStore.PredictQPS(modelName, gpu.GetTypeShortName(), gpu.TotalSMPercentage, 1.0, gpu.SMAllocationGranularity)
 
 		if totalQPS == 0 {
 			return nil, fmt.Errorf("GPU %s: %s does not have qps per replica", gpu.Name, gpu.GPUType)
@@ -290,7 +294,7 @@ func getConfigForExclusive(gpu *GPUInfo, modelName string, memory int64) (*Confi
 
 }
 
-func getConfigForFastPod(devInfo *GPUInfo, modelName string, remainingRequiredQPS float64, requiredMemory int64) *Config {
+func (nm *NodeManager) getConfigForFastPod(devInfo *GPUInfo, modelName string, remainingRequiredQPS float64, requiredMemory int64) *Config {
 
 	var bestConfig *Config
 	for sm := 5; sm <= devInfo.TotalSMPercentage; sm += devInfo.SMAllocationGranularity {
@@ -312,10 +316,9 @@ func getConfigForFastPod(devInfo *GPUInfo, modelName string, remainingRequiredQP
 				continue
 			}
 
-			qpsPerReplica, ok := profiling.RpsStore.Get(modelName, devInfo.GetTypeShortName(), sm, quota)
-			if !ok {
-				continue
-			}
+			qpsPerReplica := nm.qpsStore.PredictQPS(modelName, devInfo.GetTypeShortName(), sm, quota, devInfo.SMAllocationGranularity)
+
+			fmt.Printf("qpsPerReplica: %f\n", qpsPerReplica)
 			if qpsPerReplica == 0 {
 				continue
 			}
@@ -421,7 +424,7 @@ func extractGPUSFromNode(node *Node) []*GPUInfo {
 					nil,
 					uuid,
 					memBytes,
-					int(vgpu.SmPercentage), 10)
+					int(vgpu.SmPercentage), 5)
 			}
 		} else {
 

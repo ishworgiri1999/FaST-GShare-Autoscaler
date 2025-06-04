@@ -11,8 +11,8 @@ import (
 // Get the desired FaSTFunc Specification for scaling
 func (r *FaSTFuncReconciler) UpdateFunction(fastfunc *fastfuncv1.FaSTFunc,
 	rps10s, rps30s, rps30s_earlier float64,
-
 	minRps float64,
+	preferredGPU string,
 ) error {
 	klog.Infof("fastfunc: %s", fastfunc.ObjectMeta.Name)
 	funccc, isOldFunction := fastFuncMap[fastfunc.ObjectMeta.Name]
@@ -50,6 +50,7 @@ func (r *FaSTFuncReconciler) UpdateFunction(fastfunc *fastfuncv1.FaSTFunc,
 		ModelName:      fastfunc.Spec.ModelName,
 		QPS:            float64(deltaReqs), //just for testing
 		AllocationType: fasttypes.GetAllocationType(fastfunc.Spec.AllocationType),
+		PreferredGPU:   preferredGPU,
 	}
 
 	// KONTON Testing Start

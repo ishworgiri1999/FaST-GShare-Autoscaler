@@ -44,6 +44,10 @@ func (g *GPUInfo) GetTypeShortName() string {
 		return "t1000"
 	}
 
+	if strings.Contains(g.GPUType, "V100") {
+		return "v100"
+	}
+
 	return ""
 }
 
@@ -175,9 +179,11 @@ func (g *GPUInfo) Fits(smPercentage int, quota float64, memory int64) (bool, err
 	return true, nil
 }
 
+// mock price based on market price
 var costsPerSecondMap map[string]int = map[string]int{
-	"a100":  400,
-	"t1000": 100,
+	"a100":  12000, //1200$ per second
+	"t1000": 477,   //477$ per second
+	"v100":  4500,  //4500$ per second
 }
 
 func GetCost(shortName string) int {

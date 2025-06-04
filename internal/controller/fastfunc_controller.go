@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	fastfuncv1 "fastgshare/fastfunc/api/v1"
+	"fastgshare/fastfunc/internal/profiling"
 
 	fastpodv1 "github.com/KontonGu/FaST-GShare/pkg/apis/fastgshare.caps.in.tum/v1"
 	fastpodclientset "github.com/KontonGu/FaST-GShare/pkg/client/clientset/versioned"
@@ -287,7 +288,7 @@ func (r *FaSTFuncReconciler) SetupWithManager(mgr ctrl.Manager, initConfig InitC
 	kubeClient, _ := kubernetes.NewForConfig(ctrl.GetConfigOrDie())
 
 	stopCh := make(chan struct{})
-	r.nodeManager = NewNodeManager(5)
+	r.nodeManager = NewNodeManager(5, profiling.QpsStore)
 	go r.nodeManager.StartTCPAcceptor(initConfig.NodeListenerAddress, stopCh)
 
 	ctrl.Log.Info("Starting the FaSTFunc controller")

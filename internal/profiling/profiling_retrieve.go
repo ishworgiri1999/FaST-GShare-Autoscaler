@@ -18,14 +18,18 @@ limitations under the License.
 package profiling
 
 import (
+	embed "embed"
 	"encoding/csv"
+	"fmt"
 	"log"
-	"os"
-	"path/filepath"
+	"math"
 	"strconv"
 
 	"k8s.io/klog"
 )
+
+//go:embed data/*.csv
+var data embed.FS
 
 type ProfileKey struct {
 	ModelName    string
@@ -34,23 +38,23 @@ type ProfileKey struct {
 	Quota        float64
 }
 
-type RPSStore struct {
+type QPSStore struct {
 	data map[ProfileKey]float64 // or int if QPS is always an integer
 }
 
-func NewRPSStore() *RPSStore {
+func NewRPSStore() *QPSStore {
 	//read from file system
-	rpsStore := &RPSStore{
+	rpsStore := &QPSStore{
 		data: make(map[ProfileKey]float64),
 	}
 
 	// List of CSV files to read
-	csvFiles := []string{"profiling/a100.csv", "profiling/t1000.csv"} // Add more files as needed
+	csvFiles := []string{"data/a100.csv", "data/t1000.csv", "data/v100.csv"}
 	for _, csvFile := range csvFiles {
-		f, err := os.Open(filepath.Clean(csvFile))
-		//panif if fails
+		f, err := data.Open(csvFile)
 		if err != nil {
-			log.Fatalf("Failed to open %s: %v", csvFile, err)
+			log.Printf("Failed to open %s: %v", csvFile, err)
+			panic(err)
 		}
 		defer f.Close()
 		reader := csv.NewReader(f)
@@ -93,17 +97,35 @@ func NewRPSStore() *RPSStore {
 	return rpsStore
 }
 
-var RpsStore = NewRPSStore()
+func NewRPSStoreFromMap(data map[ProfileKey]float64) *QPSStore {
+	return &QPSStore{data: data}
+}
 
-func (s *RPSStore) Set(modelName, gpuType string, smPercentage int, quota float64, qps float64) {
+func NewEmptyQPSStore() *QPSStore {
+	return &QPSStore{data: make(map[ProfileKey]float64)}
+}
+
+func (s *QPSStore) String() string {
+	return fmt.Sprintf("%v", s.data)
+}
+
+var QpsStore = NewRPSStore()
+
+func (s *QPSStore) Set(modelName, gpuType string, smPercentage int, quota float64, qps float64) bool {
+	//quota to only 2 decimal places
+	quota = math.Round(quota*100) / 100
 	if qps <= 0 {
-		return
+		return false
 	}
 	key := ProfileKey{modelName, gpuType, smPercentage, quota}
 	s.data[key] = qps
+	return true
 }
 
-func (s *RPSStore) Get(modelName, gpuTypeShortName string, smPercentage int, quota float64) (float64, bool) {
+func (s *QPSStore) Get(modelName, gpuTypeShortName string, smPercentage int, quota float64) (float64, bool) {
+
+	//quota to only 2 decimal places
+	quota = math.Round(quota*100) / 100
 	key := ProfileKey{modelName, gpuTypeShortName, smPercentage, quota}
 	qps, exists := s.data[key]
 	if !exists || qps <= 0 {
@@ -113,7 +135,7 @@ func (s *RPSStore) Get(modelName, gpuTypeShortName string, smPercentage int, quo
 }
 
 // PredictQPS estimates the QPS for the given parameters using bilinear interpolation or nearest neighbor fallback.
-func (s *RPSStore) PredictQPS(modelName, gpuType string, smPercentage int, quota float64, roundBy int) float64 {
+func (s *QPSStore) PredictQPS(modelName, gpuType string, smPercentage int, quota float64, roundBy int) float64 {
 	// 1. Check for exact match
 	if qps, exists := s.Get(modelName, gpuType, smPercentage, quota); exists {
 		return qps

@@ -39,7 +39,6 @@ type FastFunc struct {
 	Name               string
 	configUUIDToConfig map[string]*Config
 	currentRPSCapacity float64 //current rps of the function based on the current configs
-
 }
 
 func (f *FastFunc) GetConfigForFastPod(fastPod *fastpodv1.FaSTPod) *Config {
@@ -82,6 +81,12 @@ func (r *FaSTFuncReconciler) persistentReconcile(ctx context.Context) {
 		// reconcile for each FaSTFunc
 		for _, fstfunc := range fastFuncList.Items {
 			rps := fstfunc.Spec.MinQps
+
+			preferredGPU := ""
+			if fstfunc.ObjectMeta.Annotations != nil && fstfunc.ObjectMeta.Annotations["gpu-preferred"] != "" {
+				preferredGPU = fstfunc.ObjectMeta.Annotations["gpu-preferred"]
+			}
+
 			if fstfunc.ObjectMeta.Annotations != nil && fstfunc.ObjectMeta.Annotations["qps-to-maintain"] != "" {
 				var err error
 				rps, err = strconv.Atoi(fstfunc.ObjectMeta.Annotations["qps-to-maintain"])
@@ -143,7 +148,7 @@ func (r *FaSTFuncReconciler) persistentReconcile(ctx context.Context) {
 			}
 			klog.Infof("Old 30s rps for function %s is %f.", funcName, rps30s_earlier)
 
-			err = r.UpdateFunction(&fstfunc, rps10s, rps30s, rps30s_earlier, float64(rps))
+			err = r.UpdateFunction(&fstfunc, rps10s, rps30s, rps30s_earlier, float64(rps), preferredGPU)
 			if err != nil {
 				klog.Errorf("Error Failed to update the state of the function %s.", funcName)
 				continue
