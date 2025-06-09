@@ -19,7 +19,9 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
@@ -320,4 +322,38 @@ func (r *FaSTFuncReconciler) handleDeletedFaSTFunc(name types.NamespacedName) {
 
 	//remove from fastfunc map
 	delete(fastFuncMap, name.Name)
+}
+
+// --- API Server for current configs ---
+var apiServerOnce sync.Once
+
+func startAPIServer() {
+	http.HandleFunc("/current-configs", func(w http.ResponseWriter, r *http.Request) {
+		name := r.URL.Query().Get("name")
+		if name == "" {
+			http.Error(w, "Missing 'name' query parameter", http.StatusBadRequest)
+			return
+		}
+
+		fastfunc, ok := fastFuncMap[name]
+		if !ok {
+			http.Error(w, "Function not found", http.StatusNotFound)
+			return
+		}
+
+		configs := fastfunc.CurrentConfigs()
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(configs); err != nil {
+			http.Error(w, "Failed to encode configs", http.StatusInternalServerError)
+		}
+	})
+	go func() {
+		if err := http.ListenAndServe(":9001", nil); err != nil {
+			// Optionally log error
+		}
+	}()
+}
+
+func init() {
+	apiServerOnce.Do(startAPIServer)
 }

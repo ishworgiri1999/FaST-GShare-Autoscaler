@@ -6,7 +6,7 @@ toolchain go1.24.2
 
 require github.com/KontonGu/FaST-GShare v0.0.0
 
-replace github.com/KontonGu/FaST-GShare => github.com/ishworgiri1999/FaST-GShare v0.0.0-20250515131953-6a0fff74b0f9
+replace github.com/KontonGu/FaST-GShare => github.com/ishworgiri1999/FaST-GShare v0.0.0-20250607220923-f6d846299113
 
 require (
 	github.com/go-logr/logr v1.4.2

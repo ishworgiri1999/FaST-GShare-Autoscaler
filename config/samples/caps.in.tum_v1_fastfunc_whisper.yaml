@@ -1,18 +1,18 @@
 apiVersion: caps.in.tum.fastgshare/v1
 kind: FaSTFunc
 metadata:
-  name: fastfunc-resnet
+  name: fastfunc-whisper
   namespace: fast-gshare-fn
   annotations:
-    "qps-to-maintain": "10"
+    "qps-to-maintain": "1"
 spec:
-  modelName: resnet
+  modelName: whispertiny
   minQps: 10
   allocationType: FASTPOD
   podSpec:
     containers:
-    - name: resnet-pytorch
-      image: ishworgiri/resnet:pytorch
+    - name: whisper-pytorch
+      image: ishworgiri/whisper
       ports:
         - containerPort: 8080
       readinessProbe:

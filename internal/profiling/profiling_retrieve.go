@@ -138,6 +138,9 @@ func (s *QPSStore) Get(modelName, gpuTypeShortName string, smPercentage int, quo
 func (s *QPSStore) PredictQPS(modelName, gpuType string, smPercentage int, quota float64, roundBy int) float64 {
 	// 1. Check for exact match
 	if qps, exists := s.Get(modelName, gpuType, smPercentage, quota); exists {
+		if qps <= 0 {
+			return 0
+		}
 		return qps
 	}
 

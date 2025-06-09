@@ -297,8 +297,8 @@ func (ctr *NodeManager) getConfigForExclusive(gpu *GPUInfo, modelName string, me
 func (nm *NodeManager) getConfigForFastPod(devInfo *GPUInfo, modelName string, remainingRequiredQPS float64, requiredMemory int64) *Config {
 
 	var bestConfig *Config
-	for sm := 5; sm <= devInfo.TotalSMPercentage; sm += devInfo.SMAllocationGranularity {
-		for quota := 0.2; quota <= 1.0; quota += 0.2 {
+	for sm := 1; sm <= devInfo.TotalSMPercentage; sm += 1 {
+		for quota := 0.1; quota <= 1.0; quota += 0.1 {
 			canFit, err := devInfo.Fits(sm, quota, requiredMemory)
 			if err != nil {
 				klog.Infof("Error checking if gpu %s can fit: %v", devInfo.UUID, err)
@@ -316,9 +316,8 @@ func (nm *NodeManager) getConfigForFastPod(devInfo *GPUInfo, modelName string, r
 				continue
 			}
 
-			qpsPerReplica := nm.qpsStore.PredictQPS(modelName, devInfo.GetTypeShortName(), sm, quota, devInfo.SMAllocationGranularity)
+			qpsPerReplica := nm.qpsStore.PredictQPS(modelName, devInfo.GetTypeShortName(), sm, quota, 0)
 
-			fmt.Printf("qpsPerReplica: %f\n", qpsPerReplica)
 			if qpsPerReplica == 0 {
 				continue
 			}
@@ -337,9 +336,10 @@ func (nm *NodeManager) getConfigForFastPod(devInfo *GPUInfo, modelName string, r
 				achiveableQPS = qpsPerReplica * possibleReplicas
 			}
 
-			cost := float64(devInfo.costPerSecond) * float64(sm/100) * quota * possibleReplicas
+			cost := float64(devInfo.costPerSecond) * float64(sm) / 100 * quota * possibleReplicas
 
 			if bestConfig == nil {
+
 				bestConfig = &Config{
 					UUID:            string(uuid.NewUUID()),
 					MemoryReq:       requiredMemory,
@@ -360,10 +360,12 @@ func (nm *NodeManager) getConfigForFastPod(devInfo *GPUInfo, modelName string, r
 			} else {
 				better := achiveableQPS >= bestConfig.SatisfiableRPS
 				oldExceeds := bestConfig.remainingRPS < 0
-				newExceeds := remainingRequiredQPS-achiveableQPS < 0
-				if oldExceeds && newExceeds && cost < bestConfig.Cost {
-					better = true
+				newExceeds := remainingRequiredQPS-achiveableQPS <= 0
+				//if old exceeds and new exceeds and cost is higher, then we don't need to update the best config
+				if oldExceeds && newExceeds && cost > bestConfig.Cost {
+					better = false
 				}
+
 				if better {
 					bestConfig = &Config{
 						UUID:            string(uuid.NewUUID()),

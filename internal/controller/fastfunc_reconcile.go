@@ -39,6 +39,8 @@ type FastFunc struct {
 	Name               string
 	configUUIDToConfig map[string]*Config
 	currentRPSCapacity float64 //current rps of the function based on the current configs
+	// Number of consecutive times scale-down condition has been met
+	scaleDownConsecutiveCount int
 }
 
 func (f *FastFunc) GetConfigForFastPod(fastPod *fastpodv1.FaSTPod) *Config {
@@ -59,6 +61,46 @@ func (f *FastFunc) CurrentConfigs() []*Config {
 }
 
 var fastFuncMap = make(map[string]*FastFunc)
+
+func (r *FaSTFuncReconciler) doPromQuery(ctx context.Context, query string, ts time.Time) (float64, error) {
+	queryRes, _, err := r.promv1api.Query(ctx, query, ts)
+	if err != nil {
+		return 0, err
+	}
+	if queryRes.(model.Vector).Len() != 0 {
+		//sum up the values
+		sum := 0.0
+		for _, v := range queryRes.(model.Vector) {
+			klog.Infof("v.Value: %f", v.Value)
+			sum += float64(v.Value)
+		}
+		return sum, nil
+	}
+	return 0, nil
+}
+
+func (r *FaSTFuncReconciler) getRPSMetrics(ctx context.Context, funcName, namespace string) (rps10s, rps30s, rps30sEarlier float64, err error) {
+	query10s := fmt.Sprintf("rate(gateway_function_invocation_total{function_name='%s.%s'}[10s])", funcName, namespace)
+	query30s := fmt.Sprintf("rate(gateway_function_invocation_total{function_name='%s.%s'}[30s])", funcName, namespace)
+
+	now := time.Now()
+	rps10s, err = r.doPromQuery(ctx, query10s, now)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("failed to get 10s RPS: %w", err)
+	}
+
+	rps30s, err = r.doPromQuery(ctx, query30s, now)
+	if err != nil {
+		return rps10s, 0, 0, fmt.Errorf("failed to get 30s RPS: %w", err)
+	}
+
+	rps30sEarlier, err = r.doPromQuery(ctx, query30s, now.Add(-30*time.Second))
+	if err != nil {
+		return rps10s, rps30s, 0, fmt.Errorf("failed to get old 30s RPS: %w", err)
+	}
+
+	return rps10s, rps30s, rps30sEarlier, nil
+}
 
 func (r *FaSTFuncReconciler) persistentReconcile(ctx context.Context) {
 	ticker := time.NewTicker(10 * time.Second)
@@ -103,49 +145,13 @@ func (r *FaSTFuncReconciler) persistentReconcile(ctx context.Context) {
 			klog.Infof("Checking FaSTFunc %s.", funcName)
 
 			// make a Prometheus query to get the RPS of the function
-			query := fmt.Sprintf("rate(gateway_function_invocation_total{function_name='%s.%s'}[10s])", funcName, fstfunc.ObjectMeta.Namespace)
-			klog.Infof("Prometheus Query: %s.", query)
-			queryRes, _, err := r.promv1api.Query(ctx, query, time.Now())
-			rps10s := float64(0.0)
-
+			rps10s, rps30s, rps30s_earlier, err := r.getRPSMetrics(ctx, funcName, fstfunc.ObjectMeta.Namespace)
 			if err != nil {
-				klog.Errorf("Error Failed to get RPS of function %s: %s.", funcName, err.Error())
+				klog.Errorf("Error Failed to get RPS metrics of function %s: %s.", funcName, err.Error())
 				continue
-			}
-
-			if queryRes.(model.Vector).Len() != 0 {
-				klog.Infof("Current rps vec for function %s is %v.", funcName, queryRes)
-				rps10s = float64(queryRes.(model.Vector)[0].Value)
 			}
 			klog.Infof("Current rps for function %s is %f.", funcName, rps10s)
-
-			// make a Prometheus query to get the RPS of past 30s
-			rps30s := float64(0.0)
-			pastquery := fmt.Sprintf("rate(gateway_function_invocation_total{function_name='%s.%s'}[30s])", funcName, fstfunc.ObjectMeta.Namespace)
-			// klog.Infof("Prometheus Query: %s.", pastquery)
-			pastqueryVec, _, err := r.promv1api.Query(ctx, pastquery, time.Now())
-			if err != nil {
-				klog.Errorf("Error Failed to get past 30s RPS of function %s.", funcName)
-				continue
-			}
-			if pastqueryVec.(model.Vector).Len() != 0 {
-				klog.Infof("Past 30s rps vec for function %s is %v.", funcName, pastqueryVec)
-				rps30s = float64(pastqueryVec.(model.Vector)[0].Value)
-			}
 			klog.Infof("Past 30s rps for function %s is %f.", funcName, rps30s)
-
-			// make a Prometheus query to get the RPS of old 30s in past time.
-			rps30s_earlier := float64(0.0) //before 30s
-			// klog.Infof("Prometheus Query: %s.", pastquery)
-			oldqueryVec, _, err := r.promv1api.Query(ctx, pastquery, time.Now().Add(-30*time.Second))
-			if err != nil {
-				klog.Errorf("Error Failed to get old 30s RPS of function %s.", funcName)
-				continue
-			}
-			if oldqueryVec.(model.Vector).Len() != 0 {
-				klog.Infof("Old 30s rps vec for function %s is %v.", funcName, oldqueryVec)
-				rps30s_earlier = float64(oldqueryVec.(model.Vector)[0].Value)
-			}
 			klog.Infof("Old 30s rps for function %s is %f.", funcName, rps30s_earlier)
 
 			err = r.UpdateFunction(&fstfunc, rps10s, rps30s, rps30s_earlier, float64(rps), preferredGPU)
@@ -212,9 +218,11 @@ func (r *FaSTFuncReconciler) scaleDownFaSTFunc(fastFunc *FastFunc, newRPS float6
 		maxRemovableReplicas := int(math.Floor(maxRemovableRPS / rpsPerReplica))
 		if maxRemovableReplicas >= config.AllocatedReplica {
 			//if current after removal is still greater than newRPS, then we can remove the config
-			if currentRPS-config.AllocatedRPS > newRPS {
+			if currentRPS-config.AllocatedRPS >= newRPS {
 				currentRPS -= config.AllocatedRPS
 				toRemove = append(toRemove, config)
+
+				continue
 
 			} else { //if current after removal is less than newRPS, then we can't remove the config and should break
 				break
@@ -233,7 +241,7 @@ func (r *FaSTFuncReconciler) scaleDownFaSTFunc(fastFunc *FastFunc, newRPS float6
 			//if the updated RPS is greater than the new RPS, then reduce the replicas
 
 			//if current after reduction is still greater than newRPS, then we can reduce the replicas
-			if currentRPS-reducedDelta > newRPS {
+			if currentRPS-reducedDelta >= newRPS {
 				currentRPS -= reducedDelta
 				toUpdate = append(toUpdate, &ReduceInfo{Config: config, NewReplica: newReplica, ReducedDelta: reducedDelta})
 			} else { //if current after reduction is less than newRPS, then we can't reduce the replicas and should break
@@ -291,6 +299,7 @@ func (r *FaSTFuncReconciler) scaleDownFaSTFunc(fastFunc *FastFunc, newRPS float6
 		existedCopy.ObjectMeta.Labels["com.openfaas.scale.min"] = strconv.Itoa(updateInfo.NewReplica)
 		err = r.Update(context.TODO(), existedCopy)
 		if err != nil {
+			klog.Errorf("Error: %s", err.Error())
 			klog.Errorf("Error failed to update FaSTPod %s when scaling down.", getFastPodName(fastFunc.Name, updateInfo.Config.UUID))
 			continue
 		}

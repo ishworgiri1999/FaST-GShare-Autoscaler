@@ -10,7 +10,8 @@ import (
 	"sync"
 	"time"
 
-	grpcclient "github.com/KontonGu/FaST-GShare/pkg/grpc"
+	"github.com/KontonGu/FaST-GShare/pkg/grpcclient"
+
 	"github.com/KontonGu/FaST-GShare/pkg/proto/seti/v1"
 	types "github.com/KontonGu/FaST-GShare/pkg/types"
 	"k8s.io/klog/v2"
