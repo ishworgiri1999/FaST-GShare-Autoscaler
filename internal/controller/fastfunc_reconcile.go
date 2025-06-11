@@ -188,9 +188,9 @@ func (r *FaSTFuncReconciler) scaleDownFaSTFunc(fastFunc *FastFunc, newRPS float6
 
 	currentConfigs := fastFunc.CurrentConfigs()
 
-	// Sort configs by AllocatedRPS descending (reduce larger RPS first)
+	// Sort configs by AllocatedRPS ascending (reduce smaller RPS first)
 	sort.Slice(currentConfigs, func(i, j int) bool {
-		return currentConfigs[i].AllocatedRPS > currentConfigs[j].AllocatedRPS
+		return currentConfigs[i].AllocatedRPS < currentConfigs[j].AllocatedRPS
 	})
 
 	currentRPS := 0.0
