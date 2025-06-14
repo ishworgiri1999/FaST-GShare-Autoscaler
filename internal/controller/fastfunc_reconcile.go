@@ -129,11 +129,11 @@ func (r *FaSTFuncReconciler) persistentReconcile(ctx context.Context) {
 				preferredGPU = fstfunc.ObjectMeta.Annotations["gpu-preferred"]
 			}
 
-			if fstfunc.ObjectMeta.Annotations != nil && fstfunc.ObjectMeta.Annotations["qps-to-maintain"] != "" {
+			if fstfunc.ObjectMeta.Annotations != nil && fstfunc.ObjectMeta.Annotations["min-qps"] != "" {
 				var err error
-				rps, err = strconv.Atoi(fstfunc.ObjectMeta.Annotations["qps-to-maintain"])
+				rps, err = strconv.Atoi(fstfunc.ObjectMeta.Annotations["min-qps"])
 				if err != nil {
-					klog.Errorf("Error Failed to get qps-to-maintain for function %s.", fstfunc.ObjectMeta.Name)
+					klog.Errorf("Error Failed to get min-qps for function %s.", fstfunc.ObjectMeta.Name)
 					continue
 				}
 				rps = int(rps)

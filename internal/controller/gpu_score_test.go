@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"fastgshare/fastfunc/internal/profiling"
 	"fastgshare/fastfunc/internal/shelf"
 	"testing"
 
@@ -27,7 +28,6 @@ func TestSortGPUInfos(t *testing.T) {
 		gpus      []*GPUInfo
 		req       *ResourceRequest
 		memReq    int64
-		initial   bool
 		expectTop string // name of the GPU expected to be first after sorting
 	}{
 		{
@@ -42,7 +42,6 @@ func TestSortGPUInfos(t *testing.T) {
 				AllocationType: types.AllocationTypeFastPod,
 			},
 			memReq:    8 * 1024,
-			initial:   true,
 			expectTop: "T1000",
 		},
 		{
@@ -57,7 +56,6 @@ func TestSortGPUInfos(t *testing.T) {
 				AllocationType: types.AllocationTypeFastPod,
 			},
 			memReq:    4 * 1024,
-			initial:   false,
 			expectTop: "T1000-1",
 		},
 		{
@@ -72,13 +70,12 @@ func TestSortGPUInfos(t *testing.T) {
 				AllocationType: types.AllocationTypeFastPod,
 			},
 			memReq:    4 * 1024,
-			initial:   false,
 			expectTop: "T1000-1",
 		},
 		{
 			name: "Prefer type match",
 			gpus: []*GPUInfo{
-				makeGPU("T1000", 477, 16*1024, 100, types.AllocationTypeMPS),
+				makeGPU("T1000", 477, 16*1024, 100, types.AllocationTypeExclusive),
 				makeGPU("A100", 12000, 40*1024, 100, types.AllocationTypeFastPod),
 			},
 			req: &ResourceRequest{
@@ -87,7 +84,6 @@ func TestSortGPUInfos(t *testing.T) {
 				AllocationType: types.AllocationTypeMPS,
 			},
 			memReq:    8 * 1024,
-			initial:   false,
 			expectTop: "T1000",
 		},
 		{
@@ -102,14 +98,22 @@ func TestSortGPUInfos(t *testing.T) {
 				AllocationType: types.AllocationTypeExclusive,
 			},
 			memReq:    8 * 1024,
-			initial:   false,
 			expectTop: "T1000",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gpus := sortGPUInfos(tt.gpus, tt.req, tt.memReq, tt.initial)
+			nm := &NodeManager{
+				qpsStore: profiling.NewEmptyQPSStore(),
+			}
+
+			//add fake data to qps store
+			nm.qpsStore.Set("whisper", "a100", 100, 1.0, 50)
+			nm.qpsStore.Set("whisper", "v100", 100, 1.0, 2)
+			nm.qpsStore.Set("whisper", "t1000", 100, 1.0, 30)
+
+			gpus := nm.sortGPUInfos(tt.gpus, tt.req, tt.memReq, tt.req.ModelName)
 			if len(gpus) == 0 {
 				t.Fatalf("No GPUs returned")
 			}

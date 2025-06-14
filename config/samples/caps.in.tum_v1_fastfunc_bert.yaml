@@ -4,7 +4,7 @@ metadata:
   name: fastfunc-bert
   namespace: fast-gshare-fn
   annotations:
-    "qps-to-maintain": "1"
+    "min-qps": "1"
 spec:
   modelName: bert
   minQps: 10

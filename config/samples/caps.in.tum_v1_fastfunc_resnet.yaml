@@ -4,7 +4,7 @@ metadata:
   name: fastfunc-resnet
   namespace: fast-gshare-fn
   annotations:
-    "qps-to-maintain": "10"
+    "min-qps": "10"
 spec:
   modelName: resnet
   minQps: 10

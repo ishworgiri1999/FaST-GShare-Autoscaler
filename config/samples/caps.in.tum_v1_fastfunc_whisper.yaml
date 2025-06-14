@@ -4,7 +4,7 @@ metadata:
   name: fastfunc-whisper
   namespace: fast-gshare-fn
   annotations:
-    "qps-to-maintain": "1"
+    "min-qps": "1"
 spec:
   modelName: whispertiny
   minQps: 10
