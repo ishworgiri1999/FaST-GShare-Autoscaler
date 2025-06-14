@@ -40,6 +40,7 @@ type Config struct {
 	AllocatedReplica int
 	AllocatedRPS     float64
 	shelfItems       map[int]bool
+	efficiencyScore  float64
 }
 
 func (c *Config) String() string {
@@ -103,37 +104,37 @@ func (ctr *NodeManager) GetConfigs(req *ResourceRequest, initial bool) ([]*Confi
 
 		//if allocation type is exclusive,
 
-		if req.AllocationType == types.AllocationTypeExclusive {
-			//check if gpu is virtual  and add to config
-			if devInfo.virtual {
-				config, err := ctr.getConfigForExclusive(devInfo, req.ModelName, requiredMemory)
-				if err != nil {
-					klog.Infof("GPU %s does not have config: error %v", devInfo.UUID, err)
-					continue
-				}
+		// if req.AllocationType == types.AllocationTypeExclusive {
+		// 	//check if gpu is virtual  and add to config
+		// 	if devInfo.virtual {
+		// 		config, err := ctr.getConfigForExclusive(devInfo, req.ModelName, requiredMemory)
+		// 		if err != nil {
+		// 			klog.Infof("GPU %s does not have config: error %v", devInfo.UUID, err)
+		// 			continue
+		// 		}
 
-				configs = append(configs, config)
-				remainingRequiredQPS -= config.SatisfiableRPS
-				//if remainingRequiredQPS is negative, it means we have enough qps support so we can break
-				if remainingRequiredQPS <= 0 {
-					break
-				}
+		// 		configs = append(configs, config)
+		// 		remainingRequiredQPS -= config.SatisfiableRPS
+		// 		//if remainingRequiredQPS is negative, it means we have enough qps support so we can break
+		// 		if remainingRequiredQPS <= 0 {
+		// 			break
+		// 		}
 
-				if config != nil {
-					configs = append(configs, config)
-				}
-				remainingRequiredQPS -= config.SatisfiableRPS
-				//if remainingRequiredQPS is negative, it means we have enough qps support so we can break
-				if remainingRequiredQPS <= 0 {
-					break
-				}
+		// 		if config != nil {
+		// 			configs = append(configs, config)
+		// 		}
+		// 		remainingRequiredQPS -= config.SatisfiableRPS
+		// 		//if remainingRequiredQPS is negative, it means we have enough qps support so we can break
+		// 		if remainingRequiredQPS <= 0 {
+		// 			break
+		// 		}
 
-			}
+		// 	}
 
-			continue
-		}
+		// 	continue
+		// }
 
-		bestConfig := ctr.getConfigForFastPod(devInfo, req.ModelName, remainingRequiredQPS, requiredMemory)
+		bestConfig := ctr.getConfig(devInfo, req.ModelName, remainingRequiredQPS, requiredMemory, req.AllocationType)
 
 		if bestConfig != nil {
 			remainingRequiredQPS -= bestConfig.SatisfiableRPS
@@ -294,11 +295,27 @@ func (ctr *NodeManager) getConfigForExclusive(gpu *GPUInfo, modelName string, me
 
 }
 
-func (nm *NodeManager) getConfigForFastPod(devInfo *GPUInfo, modelName string, remainingRequiredQPS float64, requiredMemory int64) *Config {
+func (nm *NodeManager) getConfig(devInfo *GPUInfo, modelName string, remainingRequiredQPS float64, requiredMemory int64, allocationType types.AllocationType) *Config {
+	if remainingRequiredQPS <= 0 {
+		return nil
+	}
 
-	var bestConfig *Config
+	type candidateConfig struct {
+		config     *Config
+		efficiency float64
+		replicas   float64
+	}
+
+	var candidates []candidateConfig
+	quotaStartFrom := 0.1
+
+	if allocationType == types.AllocationTypeExclusive {
+		quotaStartFrom = 1.0
+	}
+	//TOtaosmperventage
+	klog.Infof("Total SM Percentage: %d", devInfo.TotalSMPercentage)
 	for sm := 1; sm <= devInfo.TotalSMPercentage; sm += 1 {
-		for quota := 0.1; quota <= 1.0; quota += 0.1 {
+		for quota := quotaStartFrom; quota <= 1.0; quota += 0.1 {
 			canFit, err := devInfo.Fits(sm, quota, requiredMemory)
 			if err != nil {
 				klog.Infof("Error checking if gpu %s can fit: %v", devInfo.UUID, err)
@@ -306,7 +323,6 @@ func (nm *NodeManager) getConfigForFastPod(devInfo *GPUInfo, modelName string, r
 			}
 			if !canFit {
 				klog.Infof("GPU %s does not fit memory", devInfo.UUID)
-				//memory required available
 				memoryRequiredAvailable := devInfo.AvailableMemory()
 				klog.Infof("GPU %s has %d memory required, %d memory available", devInfo.UUID, requiredMemory, memoryRequiredAvailable)
 				if memoryRequiredAvailable < requiredMemory {
@@ -318,79 +334,95 @@ func (nm *NodeManager) getConfigForFastPod(devInfo *GPUInfo, modelName string, r
 
 			qpsPerReplica := nm.qpsStore.PredictQPS(modelName, devInfo.GetTypeShortName(), sm, quota, 0)
 
+			klog.Infof("QPS Per Replica: %f for sm: %d, quota: %f", qpsPerReplica, sm, quota)
 			if qpsPerReplica == 0 {
 				continue
 			}
 
 			possibleReplicasBySM := devInfo.Usage.MaxInsertableItems(quota, sm)
-
 			possibleReplicasByMemory := math.Floor(float64(devInfo.AvailableMemory()) / float64(requiredMemory))
-
 			possibleReplicas := math.Min(float64(possibleReplicasBySM), float64(possibleReplicasByMemory))
-
-			achiveableQPS := qpsPerReplica * possibleReplicas
+			achievableQPS := qpsPerReplica * possibleReplicas
 
 			//if finalQPS exceeds the limit, we need to reduce the replicas
-			if achiveableQPS > remainingRequiredQPS {
+			if achievableQPS > remainingRequiredQPS {
 				possibleReplicas = math.Ceil(remainingRequiredQPS / qpsPerReplica)
-				achiveableQPS = qpsPerReplica * possibleReplicas
+				achievableQPS = qpsPerReplica * possibleReplicas
 			}
 
-			cost := float64(devInfo.costPerSecond) * float64(sm) / 100 * quota * possibleReplicas
+			// Efficiency: QPS per (SM * Quota)
+			efficiency := qpsPerReplica / (float64(sm) * quota)
 
-			if bestConfig == nil {
-
-				bestConfig = &Config{
-					UUID:            string(uuid.NewUUID()),
-					MemoryReq:       requiredMemory,
-					shelfItems:      make(map[int]bool),
-					associatedGpu:   devInfo,
-					QuotaReq:        quota,
-					QuotaLimit:      math.Min(1.0, quota+0.3),
-					SMPartition:     sm,
-					VGPUUUID:        devInfo.UUID,
-					NodeName:        devInfo.NodeName,
-					RequiredReplica: int(possibleReplicas),
-					QpsPerReplica:   qpsPerReplica,
-					SatisfiableRPS:  achiveableQPS,
-					remainingRPS:    remainingRequiredQPS - achiveableQPS,
-					Cost:            cost,
-					AllocationType:  types.AllocationTypeFastPod,
-				}
-			} else {
-				better := achiveableQPS >= bestConfig.SatisfiableRPS
-				oldExceeds := bestConfig.remainingRPS < 0
-				newExceeds := remainingRequiredQPS-achiveableQPS <= 0
-				//if old exceeds and new exceeds and cost is higher, then we don't need to update the best config
-				if oldExceeds && newExceeds && cost > bestConfig.Cost {
-					better = false
-				}
-
-				if better {
-					bestConfig = &Config{
-						UUID:            string(uuid.NewUUID()),
-						MemoryReq:       requiredMemory,
-						shelfItems:      make(map[int]bool),
-						associatedGpu:   devInfo,
-						QuotaReq:        quota,
-						QuotaLimit:      math.Min(1.0, quota+0.3),
-						SMPartition:     sm,
-						VGPUUUID:        devInfo.UUID,
-						QpsPerReplica:   qpsPerReplica,
-						NodeName:        devInfo.NodeName,
-						RequiredReplica: int(possibleReplicas),
-						SatisfiableRPS:  achiveableQPS,
-						remainingRPS:    remainingRequiredQPS - achiveableQPS,
-						Cost:            cost,
-						AllocationType:  types.AllocationTypeFastPod,
-					}
-				}
+			config := &Config{
+				UUID:            string(uuid.NewUUID()),
+				MemoryReq:       requiredMemory,
+				shelfItems:      make(map[int]bool),
+				associatedGpu:   devInfo,
+				QuotaReq:        quota,
+				QuotaLimit:      math.Min(1.0, quota+0.3),
+				SMPartition:     sm,
+				VGPUUUID:        devInfo.UUID,
+				NodeName:        devInfo.NodeName,
+				RequiredReplica: int(possibleReplicas),
+				QpsPerReplica:   qpsPerReplica,
+				SatisfiableRPS:  achievableQPS,
+				remainingRPS:    remainingRequiredQPS - achievableQPS,
+				Cost:            float64(devInfo.costPerSecond) * float64(sm) / 100 * quota * possibleReplicas,
+				AllocationType:  allocationType,
 			}
+			candidates = append(candidates, candidateConfig{
+				config:     config,
+				efficiency: efficiency,
+				replicas:   possibleReplicas,
+			})
 		}
 	}
 
-	return bestConfig
+	if len(candidates) == 0 {
+		return nil
+	}
 
+	// Find min/max for normalization
+	minEff, maxEff := math.MaxFloat64, -math.MaxFloat64
+	minRep, maxRep := math.MaxFloat64, -math.MaxFloat64
+	for _, c := range candidates {
+		if c.efficiency < minEff {
+			minEff = c.efficiency
+		}
+		if c.efficiency > maxEff {
+			maxEff = c.efficiency
+		}
+		if c.replicas < minRep {
+			minRep = c.replicas
+		}
+		if c.replicas > maxRep {
+			maxRep = c.replicas
+		}
+	}
+
+	// Composite score and select best
+	alpha, beta := 0.7, 0.3 // tune as needed
+	bestScore := -math.MaxFloat64
+	var best *Config
+	for _, c := range candidates {
+		var effNorm, repNorm float64
+		if maxEff > minEff {
+			effNorm = (c.efficiency - minEff) / (maxEff - minEff)
+		} else {
+			effNorm = 1.0
+		}
+		if maxRep > minRep {
+			repNorm = (c.replicas - minRep) / (maxRep - minRep)
+		} else {
+			repNorm = 0.0
+		}
+		score := alpha*effNorm - beta*repNorm
+		if score > bestScore {
+			bestScore = score
+			best = c.config
+		}
+	}
+	return best
 }
 
 // normalizeScore returns a normalized score (higher is better) for two values, lower is better

@@ -28,7 +28,7 @@ func (r *FaSTFuncReconciler) UpdateFunction(fastfunc *fastfuncv1.FaSTFunc,
 	}
 	var totalRPSCap float64
 	if isOldFunction {
-		totalRPSCap = funccc.currentRPSCapacity * 0.8 //assume 20% reduced capacity
+		totalRPSCap = funccc.currentRPSCapacity
 	} else {
 		totalRPSCap = 0
 	}
@@ -46,7 +46,7 @@ func (r *FaSTFuncReconciler) UpdateFunction(fastfunc *fastfuncv1.FaSTFunc,
 	predictedRate = math.Max(predictedRate, minRps)
 
 	// scale up
-	estimatedFutureDemand := predictedRate * 1.1 // Always be ready for 1.1x queries
+	estimatedFutureDemand := predictedRate * 2 // Always be ready for 2x queries
 	deltaUp := estimatedFutureDemand - totalRPSCap
 
 	var loadRatio float64

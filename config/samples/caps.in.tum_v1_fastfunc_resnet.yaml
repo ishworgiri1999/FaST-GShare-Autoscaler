@@ -8,7 +8,7 @@ metadata:
 spec:
   modelName: resnet
   minQps: 10
-  allocationType: FASTPOD
+  allocationType: EXCLUSIVE
   podSpec:
     containers:
     - name: resnet-pytorch
