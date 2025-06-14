@@ -8,7 +8,7 @@ metadata:
 spec:
   modelName: bert
   minQps: 10
-  allocationType: FASTPOD
+  allocationType: EXCLUSIVE
   podSpec:
     containers:
     - name: bert-pytorch
