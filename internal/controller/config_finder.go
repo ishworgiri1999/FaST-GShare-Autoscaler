@@ -5,7 +5,6 @@ import (
 	"fastgshare/fastfunc/internal/shelf"
 	"fmt"
 	"math"
-	"sort"
 	"strings"
 
 	"github.com/KontonGu/FaST-GShare/pkg/proto/seti/v1"
@@ -91,7 +90,7 @@ func (ctr *NodeManager) GetConfigs(req *ResourceRequest, initial bool) ([]*Confi
 		gpuInfos = preferredGPUs
 	}
 
-	gpuInfos = sortGPUInfos(gpuInfos, req, requiredMemory, initial)
+	gpuInfos = ctr.sortGPUInfos(gpuInfos, req, requiredMemory)
 
 	klog.Infof("Found %d GPUs", len(gpuInfos))
 	for _, devInfo := range gpuInfos {
@@ -101,38 +100,6 @@ func (ctr *NodeManager) GetConfigs(req *ResourceRequest, initial bool) ([]*Confi
 			klog.Infof("GPU %s does not fit memory", devInfo.UUID)
 			continue
 		}
-
-		//if allocation type is exclusive,
-
-		// if req.AllocationType == types.AllocationTypeExclusive {
-		// 	//check if gpu is virtual  and add to config
-		// 	if devInfo.virtual {
-		// 		config, err := ctr.getConfigForExclusive(devInfo, req.ModelName, requiredMemory)
-		// 		if err != nil {
-		// 			klog.Infof("GPU %s does not have config: error %v", devInfo.UUID, err)
-		// 			continue
-		// 		}
-
-		// 		configs = append(configs, config)
-		// 		remainingRequiredQPS -= config.SatisfiableRPS
-		// 		//if remainingRequiredQPS is negative, it means we have enough qps support so we can break
-		// 		if remainingRequiredQPS <= 0 {
-		// 			break
-		// 		}
-
-		// 		if config != nil {
-		// 			configs = append(configs, config)
-		// 		}
-		// 		remainingRequiredQPS -= config.SatisfiableRPS
-		// 		//if remainingRequiredQPS is negative, it means we have enough qps support so we can break
-		// 		if remainingRequiredQPS <= 0 {
-		// 			break
-		// 		}
-
-		// 	}
-
-		// 	continue
-		// }
 
 		bestConfig := ctr.getConfig(devInfo, req.ModelName, remainingRequiredQPS, requiredMemory, req.AllocationType)
 
@@ -154,6 +121,29 @@ func (ctr *NodeManager) GetConfigs(req *ResourceRequest, initial bool) ([]*Confi
 		klog.Infof("Picked %d configs with satisfied QPS %f and missing QPS %f", len(configs), req.QPS-remainingRequiredQPS, remainingRequiredQPS)
 	}
 	return configs, nil
+}
+
+func (ctr *NodeManager) FilterGPUs(gpuInfos []*GPUInfo, req *ResourceRequest, requiredMemory int64) []*GPUInfo {
+	filteredGPUs := []*GPUInfo{}
+	for _, gpu := range gpuInfos {
+
+		isExclusive := gpu.allocationType == types.AllocationTypeExclusive
+
+		isUsed := gpu.allocationType != types.AllocationTypeNone
+
+		if req.AllocationType == types.AllocationTypeExclusive && isUsed {
+			continue
+		}
+
+		if req.AllocationType == types.AllocationTypeFastPod && isExclusive {
+			continue
+		}
+
+		if gpu.FitsMemory(requiredMemory) {
+			filteredGPUs = append(filteredGPUs, gpu)
+		}
+	}
+	return filteredGPUs
 }
 
 // PrepareConfigsRequirements prepares the configs for scheduling, removes failed configs
@@ -213,7 +203,7 @@ func (ctr *NodeManager) PrepareConfigsRequirements(
 			createdGPU := GPUInfo{
 				NodeName:                config.associatedGpu.NodeName,
 				UUID:                    response.ProvisionedGpu.Uuid,
-				Mem:                     int64(response.ProvisionedGpu.MemoryBytes),
+				TotalMemory:             int64(response.ProvisionedGpu.MemoryBytes),
 				TotalSMPercentage:       config.associatedGpu.TotalSMPercentage,
 				SMAllocationGranularity: 5,
 				GPUType:                 config.associatedGpu.GPUType,
@@ -252,66 +242,18 @@ func (ctr *NodeManager) PrepareConfigsRequirements(
 	return newConfigs
 }
 
-func (ctr *NodeManager) getConfigForExclusive(gpu *GPUInfo, modelName string, memory int64) (*Config, error) {
-	//for exclusive, no need to consider sm and quota
-
-	//check if gpu is virtual
-	if gpu.virtual {
-		//check memory fits
-		if !gpu.FitsMemory(memory) {
-			return nil, fmt.Errorf("GPU %s: %s does not fit memory", gpu.Name, gpu.GPUType)
-		}
-
-		//get qps per replica
-		totalQPS := ctr.qpsStore.PredictQPS(modelName, gpu.GetTypeShortName(), gpu.TotalSMPercentage, 1.0, gpu.SMAllocationGranularity)
-
-		if totalQPS == 0 {
-			return nil, fmt.Errorf("GPU %s: %s does not have qps per replica", gpu.Name, gpu.GPUType)
-		}
-
-		return &Config{
-			UUID:             string(uuid.NewUUID()),
-			shelfItems:       make(map[int]bool),
-			MemoryReq:        memory,
-			associatedGpu:    gpu,
-			QuotaReq:         1.0,
-			QuotaLimit:       1.0,
-			SMPartition:      gpu.TotalSMPercentage,
-			VGPUUUID:         gpu.UUID,
-			NodeName:         gpu.NodeName,
-			RequiredReplica:  1,
-			QpsPerReplica:    totalQPS,
-			SatisfiableRPS:   totalQPS,
-			AllocatedReplica: 1,
-			AllocatedRPS:     totalQPS,
-
-			remainingRPS:   0,
-			Cost:           float64(gpu.costPerSecond) * float64(gpu.TotalSMPercentage/100),
-			AllocationType: types.AllocationTypeExclusive,
-		}, nil
-	}
-
-	return nil, nil
-
-}
-
 func (nm *NodeManager) getConfig(devInfo *GPUInfo, modelName string, remainingRequiredQPS float64, requiredMemory int64, allocationType types.AllocationType) *Config {
 	if remainingRequiredQPS <= 0 {
 		return nil
 	}
+	var bestConfig *Config
 
-	type candidateConfig struct {
-		config     *Config
-		efficiency float64
-		replicas   float64
-	}
-
-	var candidates []candidateConfig
 	quotaStartFrom := 0.1
 
 	if allocationType == types.AllocationTypeExclusive {
 		quotaStartFrom = 1.0
 	}
+
 	//TOtaosmperventage
 	klog.Infof("Total SM Percentage: %d", devInfo.TotalSMPercentage)
 	for sm := 1; sm <= devInfo.TotalSMPercentage; sm += 1 {
@@ -332,7 +274,7 @@ func (nm *NodeManager) getConfig(devInfo *GPUInfo, modelName string, remainingRe
 				continue
 			}
 
-			qpsPerReplica := nm.qpsStore.PredictQPS(modelName, devInfo.GetTypeShortName(), sm, quota, 0)
+			qpsPerReplica := nm.qpsStore.GetQPS(modelName, devInfo.GetTypeShortName(), sm, quota, 0)
 
 			klog.Infof("QPS Per Replica: %f for sm: %d, quota: %f", qpsPerReplica, sm, quota)
 			if qpsPerReplica == 0 {
@@ -350,8 +292,10 @@ func (nm *NodeManager) getConfig(devInfo *GPUInfo, modelName string, remainingRe
 				achievableQPS = qpsPerReplica * possibleReplicas
 			}
 
+			resourceUnits := float64(sm) * quota
+
 			// Efficiency: QPS per (SM * Quota)
-			efficiency := qpsPerReplica / (float64(sm) * quota)
+			efficiency := qpsPerReplica / resourceUnits
 
 			config := &Config{
 				UUID:            string(uuid.NewUUID()),
@@ -369,69 +313,23 @@ func (nm *NodeManager) getConfig(devInfo *GPUInfo, modelName string, remainingRe
 				remainingRPS:    remainingRequiredQPS - achievableQPS,
 				Cost:            float64(devInfo.costPerSecond) * float64(sm) / 100 * quota * possibleReplicas,
 				AllocationType:  allocationType,
+				efficiencyScore: efficiency,
 			}
-			candidates = append(candidates, candidateConfig{
-				config:     config,
-				efficiency: efficiency,
-				replicas:   possibleReplicas,
-			})
+
+			if bestConfig == nil {
+				bestConfig = config
+			} else {
+				//if efficiency score is higher, we should use this config
+				if config.efficiencyScore > bestConfig.efficiencyScore {
+					bestConfig = config
+				}
+			}
+
 		}
 	}
 
-	if len(candidates) == 0 {
-		return nil
-	}
+	return nil
 
-	// Find min/max for normalization
-	minEff, maxEff := math.MaxFloat64, -math.MaxFloat64
-	minRep, maxRep := math.MaxFloat64, -math.MaxFloat64
-	for _, c := range candidates {
-		if c.efficiency < minEff {
-			minEff = c.efficiency
-		}
-		if c.efficiency > maxEff {
-			maxEff = c.efficiency
-		}
-		if c.replicas < minRep {
-			minRep = c.replicas
-		}
-		if c.replicas > maxRep {
-			maxRep = c.replicas
-		}
-	}
-
-	// Composite score and select best
-	alpha, beta := 0.7, 0.3 // tune as needed
-	bestScore := -math.MaxFloat64
-	var best *Config
-	for _, c := range candidates {
-		var effNorm, repNorm float64
-		if maxEff > minEff {
-			effNorm = (c.efficiency - minEff) / (maxEff - minEff)
-		} else {
-			effNorm = 1.0
-		}
-		if maxRep > minRep {
-			repNorm = (c.replicas - minRep) / (maxRep - minRep)
-		} else {
-			repNorm = 0.0
-		}
-		score := alpha*effNorm - beta*repNorm
-		if score > bestScore {
-			bestScore = score
-			best = c.config
-		}
-	}
-	return best
-}
-
-// normalizeScore returns a normalized score (higher is better) for two values, lower is better
-func normalizeScore(val, other float64) float64 {
-	max := math.Max(val, other)
-	if max > 0 {
-		return 1.0 - (val / max)
-	}
-	return 1.0
 }
 
 func extractGPUSFromNode(node *Node) []*GPUInfo {
@@ -481,64 +379,6 @@ func extractGPUSFromNode(node *Node) []*GPUInfo {
 		}
 
 	}
-
-	return gpuInfos
-}
-
-// gpuScore calculates the weighted score for a GPU
-func gpuScore(g *GPUInfo, other *GPUInfo, req *ResourceRequest, requestMemory int64, weights map[string]float64) float64 {
-
-	costScore := normalizeScore(float64(g.costPerSecond), float64(other.costPerSecond))
-	memoryDiff := float64(g.Mem - requestMemory)
-	otherMemoryDiff := float64(other.Mem - requestMemory)
-	memoryDiffScore := normalizeScore(memoryDiff, otherMemoryDiff)
-	smScore := normalizeScore(float64(g.TotalSMPercentage), float64(other.TotalSMPercentage))
-	memSizeScore := normalizeScore(float64(g.Mem), float64(other.Mem))
-	typeMatchScore := 0.0
-	if g.allocationType == req.AllocationType {
-		typeMatchScore = 1.0
-	}
-
-	return weights["cost"]*costScore +
-		weights["memoryDiff"]*memoryDiffScore +
-		weights["sm"]*smScore +
-		weights["memSize"]*memSizeScore +
-		weights["typeMatch"]*typeMatchScore
-}
-
-func sortGPUInfos(gpuInfos []*GPUInfo, req *ResourceRequest, memory int64, initial bool) []*GPUInfo {
-
-	var weights map[string]float64
-	if req.AllocationType == types.AllocationTypeExclusive {
-
-		weights = map[string]float64{
-			"cost":       0.4,
-			"memoryDiff": 0.3,
-			"sm":         0.2,
-			"memSize":    0.1,
-			"typeMatch":  0.0,
-		}
-	} else {
-
-		//if initial, prioritize cheaper GPUs
-		costWeight := 0.4
-		if initial {
-			costWeight = 0.6
-		}
-		weights = map[string]float64{
-			"cost":       costWeight,
-			"memoryDiff": 0.0,
-			"sm":         0.1,
-			"memSize":    0.1,
-			"typeMatch":  0.3,
-		}
-	}
-
-	sort.Slice(gpuInfos, func(i, j int) bool {
-		iScore := gpuScore(gpuInfos[i], gpuInfos[j], req, memory, weights)
-		jScore := gpuScore(gpuInfos[j], gpuInfos[i], req, memory, weights)
-		return iScore > jScore
-	})
 
 	return gpuInfos
 }

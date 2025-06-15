@@ -15,23 +15,15 @@ type GPUInfo struct {
 	allocationType          types.AllocationType
 	GPUType                 string // GPU type, eg. V100-PCIE-16GB
 	UUID                    string
-	Mem                     int64
+	TotalMemory             int64
 	Name                    string // could be different than GPUType or same
 	ParentUUID              string // physical gpu uuid (different for mig gpu, same for physical gpu)
 	TotalSMPercentage       int    // 0-100 // 100 for physical GPU . for mig gpu, it is the percentage of SMs.
 	NodeName                string
 	Usage                   *shelf.ShelfPacker
-	SMAllocationGranularity int //sm cant be assigned arbitrary, it has to be a multiple of this
-
-	// Usage of GPU Memory
-	UsageMem int64
-	// podList      *list.List //Fastpod or MPSPod
-	//	ExclusivePod string
-
-	costPerSecond int
-
-	isModelPresent          map[string]bool
-	podConfigToShelfItemsId map[string][]int
+	SMAllocationGranularity int   //sm cant be assigned arbitrary, it has to be a multiple of this
+	UsageMemory             int64 // Usage of GPU Memory
+	costPerSecond           int
 }
 
 func (g *GPUInfo) GetTypeShortName() string {
@@ -52,7 +44,7 @@ func (g *GPUInfo) GetTypeShortName() string {
 }
 
 func (g *GPUInfo) AvailableMemory() int64 {
-	return g.Mem - g.UsageMem
+	return g.TotalMemory - g.UsageMemory
 }
 
 func (g *GPUInfo) AllocateAndCommitConfig(config *Config) (*Config, error) {
@@ -61,14 +53,14 @@ func (g *GPUInfo) AllocateAndCommitConfig(config *Config) (*Config, error) {
 	g.allocationType = config.AllocationType
 
 	// Remove memory from usage
-	g.UsageMem -= (config.MemoryReq * int64(config.RequiredReplica))
+	g.UsageMemory -= (config.MemoryReq * int64(config.RequiredReplica))
 
 	successfulReplicas := 0
 	for i := 0; i < config.RequiredReplica; i++ {
 		id, err := g.Usage.Insert(config.QuotaReq, config.SMPartition)
 		if err != nil {
 			// Rollback memory usage for failed inserts
-			g.UsageMem += (config.MemoryReq * int64(config.RequiredReplica-successfulReplicas))
+			g.UsageMemory += (config.MemoryReq * int64(config.RequiredReplica-successfulReplicas))
 			break
 		}
 		config.shelfItems[id] = true
@@ -93,7 +85,7 @@ func (g *GPUInfo) DeallocateConfig(config *Config) bool {
 		delete(config.shelfItems, id)
 	}
 	//remove memory from usage
-	g.UsageMem += (config.MemoryReq * int64(config.AllocatedReplica))
+	g.UsageMemory += (config.MemoryReq * int64(config.AllocatedReplica))
 
 	return g.Usage.IsEmpty()
 }
@@ -107,7 +99,7 @@ func (g *GPUInfo) ReduceConfig(config *Config, newReplicaCount int) bool {
 	}
 
 	//remove memory from usage
-	g.UsageMem -= (config.MemoryReq * int64(replicaReduceCount))
+	g.UsageMemory -= (config.MemoryReq * int64(replicaReduceCount))
 	//remove shelf items
 
 	removalCount := 0
@@ -133,13 +125,11 @@ func NewGPUDevInfo(nodeName string, gpuType string, virtual bool, profileID *uin
 		GPUType:                 gpuType,
 		UUID:                    uuid,
 		NodeName:                nodeName,
-		Mem:                     mem,
-		UsageMem:                0,
+		TotalMemory:             mem,
+		UsageMemory:             0,
 		TotalSMPercentage:       totalSMPercentage,
 		SMAllocationGranularity: smAllocationGranularity,
 		Usage:                   shelf.NewShelf(totalSMPercentage),
-		// podList:                 list.New(),
-		podConfigToShelfItemsId: make(map[string][]int),
 	}
 	gpuDevInfo.costPerSecond = GetCost(gpuDevInfo.GetTypeShortName())
 
@@ -147,7 +137,7 @@ func NewGPUDevInfo(nodeName string, gpuType string, virtual bool, profileID *uin
 }
 
 func (g *GPUInfo) FitsMemory(memory int64) bool {
-	return memory <= g.Mem
+	return memory <= g.TotalMemory
 }
 
 func (g *GPUInfo) FitsSM(smPercentage int) bool {

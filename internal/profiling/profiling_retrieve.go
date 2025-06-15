@@ -134,8 +134,8 @@ func (s *QPSStore) Get(modelName, gpuTypeShortName string, smPercentage int, quo
 	return qps, true
 }
 
-// PredictQPS estimates the QPS for the given parameters using bilinear interpolation or nearest neighbor fallback.
-func (s *QPSStore) PredictQPS(modelName, gpuType string, smPercentage int, quota float64, roundBy int) float64 {
+// GetQPS estimates the QPS for the given parameters using bilinear interpolation or nearest neighbor fallback.
+func (s *QPSStore) GetQPS(modelName, gpuType string, smPercentage int, quota float64, roundBy int) float64 {
 	// 1. Check for exact match
 	if qps, exists := s.Get(modelName, gpuType, smPercentage, quota); exists {
 		if qps <= 0 {

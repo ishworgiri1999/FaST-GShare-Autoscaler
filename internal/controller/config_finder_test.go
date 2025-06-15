@@ -22,7 +22,7 @@ func TestGetConfigs_Basic(t *testing.T) {
 		}
 	}
 
-	rpsStore.PredictQPS("resnet", "a100", 100, 1.0, 5)
+	rpsStore.GetQPS("resnet", "a100", 100, 1.0, 5)
 
 	// Minimal ShelfPacker
 	usage := shelf.NewShelf(100)
@@ -31,7 +31,7 @@ func TestGetConfigs_Basic(t *testing.T) {
 	gpu := &GPUInfo{
 		GPUType:                 "A100",
 		UUID:                    "gpu-1",
-		Mem:                     2_000_000_000, // matches resnet (1GB)
+		TotalMemory:             2_000_000_000, // matches resnet (1GB)
 		TotalSMPercentage:       100,
 		SMAllocationGranularity: 5,
 		NodeName:                "node-1",

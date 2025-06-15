@@ -56,12 +56,12 @@ func TestQPSStore_PredictQPS(t *testing.T) {
 	smPercentage := 80
 	quota := 0.5
 
-	predictedQPS := store.PredictQPS(modelName, gpuType, smPercentage, quota, 0)
+	predictedQPS := store.GetQPS(modelName, gpuType, smPercentage, quota, 0)
 	if predictedQPS != 123.45 {
 		t.Errorf("Expected predicted QPS %v, got %v", 123.45, predictedQPS)
 	}
 
-	predictedQPS = store.PredictQPS("othermodel", gpuType, smPercentage, quota, 0)
+	predictedQPS = store.GetQPS("othermodel", gpuType, smPercentage, quota, 0)
 	if predictedQPS != 0 {
 		t.Errorf("Expected predicted QPS %v, got %v", 0, predictedQPS)
 	}
