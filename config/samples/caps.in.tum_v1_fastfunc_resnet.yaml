@@ -4,11 +4,12 @@ metadata:
   name: fastfunc-resnet
   namespace: fast-gshare-fn
   annotations:
-    "min-qps": "10"
+    "min-qps": "120"
+    "gpu-preferred": "V100"
 spec:
   modelName: resnet
   minQps: 10
-  allocationType: EXCLUSIVE
+  allocationType: FASTPOD
   podSpec:
     containers:
     - name: resnet-pytorch

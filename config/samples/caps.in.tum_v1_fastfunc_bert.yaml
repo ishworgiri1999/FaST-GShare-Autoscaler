@@ -4,11 +4,13 @@ metadata:
   name: fastfunc-bert
   namespace: fast-gshare-fn
   annotations:
-    "min-qps": "1"
+    "min-qps": "24"
+    # "gpu-preferred": "V100"
+
 spec:
   modelName: bert
   minQps: 10
-  allocationType: EXCLUSIVE
+  allocationType: FASTPOD
   podSpec:
     containers:
     - name: bert-pytorch

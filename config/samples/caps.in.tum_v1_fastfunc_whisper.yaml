@@ -4,11 +4,13 @@ metadata:
   name: fastfunc-whisper
   namespace: fast-gshare-fn
   annotations:
-    "min-qps": "1"
+    "min-qps": "9"
+    "gpu-preferred": "V100"
+
 spec:
   modelName: whispertiny
   minQps: 10
-  allocationType: EXCLUSIVE
+  allocationType: FASTPOD
   podSpec:
     containers:
     - name: whisper-pytorch

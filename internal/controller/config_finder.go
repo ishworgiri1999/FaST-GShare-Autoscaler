@@ -333,7 +333,7 @@ func (nm *NodeManager) getConfig(devInfo *GPUInfo, modelName string, remainingRe
 		}
 	}
 
-	return nil
+	return bestConfig
 
 }
 

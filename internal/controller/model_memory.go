@@ -5,7 +5,7 @@ import "fmt"
 // in bytes
 var modelMemoryMap map[string]int64 = map[string]int64{
 	"resnet":      1_000_000_000, // ~1gb
-	"bert":        3_073_741_824, // ~3GB
+	"bert":        2_073_741_824, // ~2GB
 	"whispertiny": 1_000_000_000, // ~1GB
 
 	"gnmt": 2_073_741_824, // ~2GB //deprecated
