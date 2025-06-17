@@ -49,7 +49,7 @@ func NewRPSStore() *QPSStore {
 	}
 
 	// List of CSV files to read
-	csvFiles := []string{"data/a100.csv", "data/v100.csv"}
+	csvFiles := []string{"data/a100.csv", "data/v100.csv", "data/rtx2080ti.csv"}
 	for _, csvFile := range csvFiles {
 		f, err := data.Open(csvFile)
 		if err != nil {

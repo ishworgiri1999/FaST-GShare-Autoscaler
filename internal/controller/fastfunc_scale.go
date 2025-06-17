@@ -46,7 +46,7 @@ func (r *FaSTFuncReconciler) UpdateFunction(fastfunc *fastfuncv1.FaSTFunc,
 	predictedRate = math.Max(predictedRate, minRps)
 
 	// scale up
-	estimatedFutureDemand := predictedRate * 2 // Always be ready for 2x queries
+	estimatedFutureDemand := predictedRate * 1 // Always be ready for 2x queries
 	deltaUp := estimatedFutureDemand - totalRPSCap
 
 	var loadRatio float64
