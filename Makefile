@@ -1,5 +1,5 @@
 # Image URL to use all building/pushing image targets
-IMG ?= controller:latest
+IMG ?= ishworgiri/fast-gshare-autoscaler:latest
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 ENVTEST_K8S_VERSION = 1.31.0
 
@@ -97,10 +97,9 @@ docker-build: ## Build docker image with the manager.
 docker-push: ## Push docker image with the manager.
 	$(CONTAINER_TOOL) push ${IMG}
 
-DOCKER_IMAGE_NAME := fast-gshare-autoscaler
 .PHONY: docker-clean
 docker-clean: ## clean docker image with the manager
-	sudo ctr -n k8s.io i ls | grep -i ${DOCKER_IMAGE_NAME} | awk '{print $$1}' | xargs -I {} sudo ctr -n k8s.io i rm {} 
+	sudo ctr -n k8s.io i ls | grep -i ${IMG} | awk '{print $$1}' | xargs -I {} sudo ctr -n k8s.io i rm {} 
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
@@ -108,16 +107,12 @@ docker-clean: ## clean docker image with the manager
 # - have enabled BuildKit. More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 # - be able to push the image to your registry (i.e. if you do not set a valid value via IMG=<myregistry/image:<tag>> then the export will fail)
 # To adequately provide solutions that are compatible with multiple platforms, you should consider using this option.
-PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
+
+
+PLATFORMS ?= linux/amd64
 .PHONY: docker-buildx
 docker-buildx: ## Build and push docker image for the manager for cross-platform support
-	# copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross, and preserve the original Dockerfile
-	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
-	- $(CONTAINER_TOOL) buildx create --name fast-gshare-autoscaler-builder
-	$(CONTAINER_TOOL) buildx use fast-gshare-autoscaler-builder
-	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${IMG} -f Dockerfile.cross .
-	- $(CONTAINER_TOOL) buildx rm fast-gshare-autoscaler-builder
-	rm Dockerfile.cross
+	$(CONTAINER_TOOL) buildx build --platform=$(PLATFORMS) -t ${IMG} . --push
 
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.

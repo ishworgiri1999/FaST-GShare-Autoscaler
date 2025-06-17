@@ -139,6 +139,11 @@ func (ctr *NodeManager) FilterGPUs(gpuInfos []*GPUInfo, req *ResourceRequest, re
 			continue
 		}
 
+		// for exclusive allocation, only consider virtual GPUs (not physical)
+		if req.AllocationType == types.AllocationTypeExclusive && !gpu.virtual {
+			continue
+		}
+
 		if gpu.FitsMemory(requiredMemory) {
 			filteredGPUs = append(filteredGPUs, gpu)
 		}
@@ -249,14 +254,15 @@ func (nm *NodeManager) getConfig(devInfo *GPUInfo, modelName string, remainingRe
 	var bestConfig *Config
 
 	quotaStartFrom := 0.1
+	smStartFrom := 1
 
 	if allocationType == types.AllocationTypeExclusive {
+		smStartFrom = devInfo.TotalSMPercentage
 		quotaStartFrom = 1.0
 	}
 
-	//TOtaosmperventage
 	klog.Infof("Total SM Percentage: %d", devInfo.TotalSMPercentage)
-	for sm := 1; sm <= devInfo.TotalSMPercentage; sm += 1 {
+	for sm := smStartFrom; sm <= devInfo.TotalSMPercentage; sm += 1 {
 		for quota := quotaStartFrom; quota <= 1.0; quota += 0.1 {
 			canFit, err := devInfo.Fits(sm, quota, requiredMemory)
 			if err != nil {
@@ -276,7 +282,6 @@ func (nm *NodeManager) getConfig(devInfo *GPUInfo, modelName string, remainingRe
 
 			qpsPerReplica := nm.qpsStore.GetQPS(modelName, devInfo.GetTypeShortName(), sm, quota, 0)
 
-			klog.Infof("QPS Per Replica: %f for sm: %d, quota: %f", qpsPerReplica, sm, quota)
 			if qpsPerReplica == 0 {
 				continue
 			}
