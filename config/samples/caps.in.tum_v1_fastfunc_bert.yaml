@@ -4,7 +4,7 @@ metadata:
   name: fastfunc-bert
   namespace: fast-gshare-fn
   annotations:
-    "min-qps": "24"
+    "min-qps": "10"
     # "gpu-preferred": "V100"
 
 spec:

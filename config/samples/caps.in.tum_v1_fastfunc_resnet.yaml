@@ -4,7 +4,7 @@ metadata:
   name: fastfunc-resnet
   namespace: fast-gshare-fn
   annotations:
-    "min-qps": "120"
+    "min-qps": "10"
     "gpu-preferred": "V100"
 spec:
   modelName: resnet

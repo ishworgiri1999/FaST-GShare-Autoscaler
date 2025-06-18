@@ -4,7 +4,7 @@ metadata:
   name: fastfunc-whisper
   namespace: fast-gshare-fn
   annotations:
-    "min-qps": "9"
+    "min-qps": "2"
     "gpu-preferred": "V100"
 
 spec:
