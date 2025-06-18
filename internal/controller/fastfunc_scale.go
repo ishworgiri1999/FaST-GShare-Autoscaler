@@ -10,6 +10,11 @@ import (
 	"k8s.io/klog/v2"
 )
 
+var SCALE_DOWN_CONSECUTIVE_REQUIRED = 3 // Number of consecutive checks required to scale down
+var SCALE_FACTOR = 1.5                  // Scale up by 1.5x of the current capacity
+
+var SCALE_DOWN_THRESHOLD = 0.5 // Load ratio threshold to trigger scale down
+
 // Get the desired FaSTFunc Specification for scaling
 func (r *FaSTFuncReconciler) UpdateFunction(fastfunc *fastfuncv1.FaSTFunc,
 	rps10s, rps30s, rps30s_earlier float64,
@@ -46,7 +51,7 @@ func (r *FaSTFuncReconciler) UpdateFunction(fastfunc *fastfuncv1.FaSTFunc,
 	predictedRate = math.Max(predictedRate, minRps)
 
 	// scale up
-	estimatedFutureDemand := predictedRate * 1 // Always be ready for 2x queries
+	estimatedFutureDemand := predictedRate * SCALE_FACTOR // Always be ready for 2x queries
 	deltaUp := estimatedFutureDemand - totalRPSCap
 
 	var loadRatio float64
@@ -56,7 +61,7 @@ func (r *FaSTFuncReconciler) UpdateFunction(fastfunc *fastfuncv1.FaSTFunc,
 		loadRatio = 0
 	}
 
-	scaleDownThreshold := 0.5
+	scaleDownThreshold := SCALE_DOWN_THRESHOLD
 
 	fmt.Printf("10s Rate: %.2f req/s\n", rps10s)
 	fmt.Printf("Predicted Rate: %.2f req/s\n", predictedRate)
@@ -72,7 +77,7 @@ func (r *FaSTFuncReconciler) UpdateFunction(fastfunc *fastfuncv1.FaSTFunc,
 	shouldScaleUp := false
 	shouldScaleDown := false
 
-	scaleDownConsecutiveRequired := 3 // Number of consecutive checks required
+	scaleDownConsecutiveRequired := SCALE_DOWN_CONSECUTIVE_REQUIRED // Number of consecutive checks required
 
 	if deltaUp > 0 || !isOldFunction {
 		shouldScaleUp = true
@@ -114,7 +119,7 @@ func (r *FaSTFuncReconciler) UpdateFunction(fastfunc *fastfuncv1.FaSTFunc,
 
 		fastpods, _ := r.ConvertConfigs2FaSTPods(fastfunc, newConfigList)
 
-		err = r.ReconcileFaSTPod(fastpods)
+		err = r.AddFastPods(fastpods)
 		if err != nil {
 			klog.Errorf("Error Failed to reconcile the desired FaSTPods for function %s.", fastfunc.ObjectMeta.Name)
 			return err

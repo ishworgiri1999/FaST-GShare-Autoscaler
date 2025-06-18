@@ -14,6 +14,9 @@ import (
 
 	"github.com/KontonGu/FaST-GShare/pkg/proto/seti/v1"
 	types "github.com/KontonGu/FaST-GShare/pkg/types"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 )
 
@@ -45,11 +48,12 @@ type NodeManager struct {
 	nodes          map[string]*Node
 	nodesMtx       sync.Mutex
 	qpsStore       *profiling.QPSStore
+	kubeClient     kubernetes.Interface
 	checkTickerItv int
 }
 
 // NewNodeManager creates a new NodeManager.
-func NewNodeManager(checkInterval int, qpsStore *profiling.QPSStore) *NodeManager {
+func NewNodeManager(checkInterval int, qpsStore *profiling.QPSStore, kubeClient kubernetes.Interface) *NodeManager {
 
 	interval := time.Duration(checkInterval) * time.Second
 	if interval < 10*time.Second {
@@ -59,6 +63,7 @@ func NewNodeManager(checkInterval int, qpsStore *profiling.QPSStore) *NodeManage
 		nodes:          make(map[string]*Node),
 		checkTickerItv: int(interval.Seconds()),
 		qpsStore:       qpsStore,
+		kubeClient:     kubeClient,
 	}
 }
 
@@ -159,6 +164,19 @@ func (nm *NodeManager) handleNodeConnection(conn net.Conn) {
 	}
 	nodeName := helloMessage.Hostname
 	klog.Infof("Received hello from node %s (IP: %s, gRPC port: %d)", nodeName, nodeIP, helloMessage.GrpcPort)
+
+	klog.Infof("Received hostname from node information: %s", helloMessage.Hostname)
+	daemonPodName := nodeName
+	daemonPod, err := nm.kubeClient.CoreV1().Pods("kube-system").Get(context.TODO(), daemonPodName, metav1.GetOptions{})
+	if err != nil {
+		klog.Errorf("Error cannot find the node daemonset. Using the default node name.")
+	}
+	if len(daemonPod.Spec.NodeName) > 0 {
+
+		nodeName = daemonPod.Spec.NodeName
+		nodeIP = daemonPod.Status.HostIP
+		klog.Infof("Node name is: %s", nodeName)
+	}
 
 	// 2. Send ack
 	ackMsg := types.ConfiguratorNodeAckMessage{Ok: true}

@@ -10,7 +10,7 @@ import (
 )
 
 // reconcile the desired replicas of the FaSTFunc
-func (r *FaSTFuncReconciler) ReconcileFaSTPod(fastpods []*fastpodv1.FaSTPod) error {
+func (r *FaSTFuncReconciler) AddFastPods(fastpods []*fastpodv1.FaSTPod) error {
 	for _, fastpod := range fastpods {
 		existed := &fastpodv1.FaSTPod{}
 		err := r.Get(context.TODO(), types.NamespacedName{Name: fastpod.GetName(), Namespace: fastpod.GetNamespace()}, existed)

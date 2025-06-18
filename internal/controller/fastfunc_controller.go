@@ -290,7 +290,7 @@ func (r *FaSTFuncReconciler) SetupWithManager(mgr ctrl.Manager, initConfig InitC
 	kubeClient, _ := kubernetes.NewForConfig(ctrl.GetConfigOrDie())
 
 	stopCh := make(chan struct{})
-	r.nodeManager = NewNodeManager(5, profiling.QpsStore)
+	r.nodeManager = NewNodeManager(5, profiling.QpsStore, kubeClient)
 	go r.nodeManager.StartTCPAcceptor(initConfig.NodeListenerAddress, stopCh)
 
 	ctrl.Log.Info("Starting the FaSTFunc controller")
