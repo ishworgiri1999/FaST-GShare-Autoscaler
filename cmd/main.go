@@ -71,7 +71,7 @@ func main() {
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 
-	flag.StringVar(&initConfig.NodeListenerAddress, "node-listener-address", "0.0.0.0:10089", "The address the node listener binds to.")
+	flag.StringVar(&initConfig.NodeListenerAddress, "node-listener-address", "0.0.0.0:10088", "The address the node listener binds to.")
 	flag.StringVar(&initConfig.PrometheusURL, "prometheus-url", "http://prometheus.fast-gshare.svc.cluster.local:9090", "The URL of the prometheus server for fast-func.")
 	opts := zap.Options{
 		Development: true,
